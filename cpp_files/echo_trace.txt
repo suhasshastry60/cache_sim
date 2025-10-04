@@ -1,0 +1,10 @@
+===== Simulator configuration =====
+BLOCKSIZE:  32
+L1_SIZE:    8192
+L1_ASSOC:   4
+L2_SIZE:    262144
+L2_ASSOC:   8
+PREF_N:     3
+PREF_M:     10
+trace_file: ../example_trace.txt
+
