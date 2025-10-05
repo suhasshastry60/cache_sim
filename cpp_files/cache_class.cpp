@@ -172,9 +172,42 @@ public:
                         cache_hit_read(tag_val, resp_out);  // HIT in this level
                     } else {
                         addr_out = addr;  // Send address to next level
-                        cache_miss_read(addr_out, resp_out);  // Query next level
+                        cache_miss_read(addr_out, resp_in);  // Query next level
 
-                        if (resp_out == 1) {  // If lower level returned a hit
+                        if (resp_in == 1) {  // If lower level returned a hit
+                        cache[set_idx][w][0] = tag_val;  // Allocate new tag
+                        // Build metadata using helper functions
+                        int metadata = 0;  // Start with all zeros
+                        metadata = set_blk_offset(metadata, blk_offset);  // Set block offset
+                        metadata = set_lru(metadata, 0);                  // Set LRU = 0
+                        metadata = set_dirty(metadata, 0);                // Set dirty = 0
+                        metadata = set_valid(metadata, 1);                // Set valid = 1
+                        // After updating the lru of this way, increment lru of others
+                        // need to update lru of other ways
+                        //No need to worry about dirty bit as this block is invalid in the first place
+                        cache[set_idx][w][1] = metadata;  // Store metadata
+                }
+                    }
+                    return;  // Exit after handling hit/miss
+                }
+                else {
+                    // Find the highest LRU way for replacement, check if they are invalid or dirty, if so get its tag,index and blk_offset, concat and make addr_out.
+                    //do a writeback and then allocate the new block
+                    uint64_t eblk_addr = 0;
+                    int dirty = 0;
+                    lru_order(set_idx, assoc, dirty, eblk_addr);  // Get address of block to evict
+                    if (dirty == 1) {
+                        // Write back to lower level
+                        addr_out = eblk_addr;  // Address to write back
+                        cache_"#cache_num+1".cache_write(addr_out, resp_in);  // Write back to lower level
+                        // Implement write-back logic here if needed
+                        if (resp_in != 1) {
+                            cerr << "Error: Write-back to lower level failed." << endl;
+                            exit(EXIT_FAILURE);
+                        }
+                        else {
+                            cache_"#cache_num+1".cache_read(addr, resp_in);
+                        if (resp_in == 1) {  // If lower level returned a hit
                         cache[set_idx][w][0] = tag_val;  // Allocate new tag
                         // Build metadata using helper functions
                         int metadata = 0;  // Start with all zeros
@@ -185,14 +218,10 @@ public:
                         // After updating the lru of this way, increment lru of others
                         //No need to worry about dirty bit as this block is invalid in the first place
                         cache[set_idx][w][1] = metadata;  // Store metadata
-                }
+                        }
                     }
-                    return;  // Exit after handling hit/miss
-                }
-                else {
-                    // Find the highest LRU way for replacement, check if they are invalid or dirty, if so get its tag,index and blk_offset, concat and make addr_out.
-                    //do a writeback and then allocate the new block
-                    
+                    }
+
                 }
             }
         }
