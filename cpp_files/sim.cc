@@ -5,6 +5,7 @@
 #include "sim.h"
 #include <bits/stdc++.h>
 #include <vector>
+#include <iomanip>
 using namespace std;
 
 /*  "argc" holds the number of command-line arguments.
@@ -35,6 +36,12 @@ public:
     int tag_bits, index_bits, blk_offset_bits;
     int lru_bits;
     int metadata_width;
+    uint64_t reads = 0;
+    uint64_t read_misses = 0;
+    uint64_t writes = 0;
+    uint64_t write_misses = 0;
+    uint64_t writebacks = 0;
+    uint64_t prefetches = 0;
 
     cache_wrapper(int size, int assoc, int blk_size, uint64_t addr_in,
                   int tag_out, int addr_out, int resp_in, int cache_num,
@@ -138,21 +145,21 @@ public:
     }
 
     // Helper functions to access metadata fields
-    int get_valid(int metadata) {
+    int get_valid(int metadata) const {
         return metadata & 0x1;
     }
 
-    int get_dirty(int metadata) {
+    int get_dirty(int metadata) const {
         return (metadata >> 1) & 0x1;
     }
 
-    int get_lru(int metadata) {
+    int get_lru(int metadata) const {
         if (lru_bits == 0) return 0;
         int mask = (1 << lru_bits) - 1;
         return (metadata >> 2) & mask;
     }
 
-    int get_blk_offset(int metadata) {
+    int get_blk_offset(int metadata) const {
         int shift = 2 + lru_bits;
         if (blk_offset_bits == 0) return 0;
         int mask = (1 << blk_offset_bits) - 1;
@@ -220,12 +227,63 @@ public:
         }
     }
 
+    // void print_contents() const {
+    //     cout << "===== " << (cache_num == 1 ? "L1" : "L2") << " contents =====\n";
+    //     for (int s = 0; s < set_size; ++s) {
+    //         cout << "set" << setw(7) << s << ":   ";
+    //         for (int w = 0; w < assoc; ++w) {
+    //             if (get_valid(cache[s][w][1])) {
+    //                 cout << hex << cache[s][w][0] << (get_dirty(cache[s][w][1]) ? " D" : "  ");
+    //             } else {
+    //                 cout << "   ";
+    //             }
+    //         }
+    //         cout << endl;
+    //     }
+    // }
+
+void print_contents() const {
+    // Ensure set index printed in decimal
+    std::ios::fmtflags old_flags = cout.flags();
+    cout << dec;
+
+    cout << "===== " << (cache_num == 1 ? "L1" : "L2") << " contents =====\n";
+    for (int s = 0; s < set_size; ++s) {
+        // print "set" then decimal index (width like your expected output)
+        cout << "set" << setw(7) << dec << s << ":   ";
+
+        for (int w = 0; w < assoc; ++w) {
+            if (get_valid(cache[s][w][1])) {
+                // Temporarily switch to hex for the tag only, then restore flags
+                std::ios::fmtflags f = cout.flags();
+                cout << hex << nouppercase << cache[s][w][0];
+                cout.flags(f);
+
+                // print dirty marker (space alignment similar to your original)
+                if (get_dirty(cache[s][w][1])) cout << " D";
+                else cout << "  ";
+                // keep stream in decimal for next things (set index, measurements)
+            } else {
+                cout << "   ";
+            }
+        }
+        cout << '\n';
+    }
+
+    // restore original flags (mainly ensures decimal for subsequent prints)
+    cout.flags(old_flags);
+    cout << dec; // extra guard
+}
+
+
     void cache_read(uint64_t addr, int &resp_out) {
         uint32_t addr32 = (uint32_t)addr;
         uint32_t blk_mask = (blk_offset_bits == 0) ? 0U : ((1U << blk_offset_bits) - 1U);
         int blk_offset = (blk_offset_bits == 0) ? 0 : (addr32 & blk_mask);
         int set_idx = (blk_offset_bits == 32) ? 0 : ((addr32 >> blk_offset_bits) & ((1U << index_bits) - 1U));
         int tag_val = (addr32 >> (blk_offset_bits + index_bits)) & ((1U << tag_bits) - 1U);
+
+        ++reads;
 
         if (set_idx < 0 || set_idx >= set_size) {
             cerr << "Error: set_idx out of range in cache_read: " << set_idx << endl;
@@ -242,11 +300,13 @@ public:
                 // Tag matches AND valid - HIT
                 cache_hit_read(tag_val, resp_out);
             } else {
+                ++read_misses;
                 // MISS - either tag doesn't match or not valid
                 // Check if we need to evict (valid block with different tag)
                 if (get_valid(metadata) == 1 && stored_tag != tag_val) {
                     // Valid block exists but different tag - need to evict
                     if (get_dirty(metadata) == 1) {
+                        ++writebacks;
                         // Dirty block - write back to lower level
                         int blk_offset_evict = get_blk_offset(metadata);
                         uint64_t eblk_addr = ((uint64_t)stored_tag << (index_bits + blk_offset_bits)) |
@@ -305,6 +365,7 @@ public:
             }
 
             if (!found) {
+                ++read_misses;
                 // MISS - find a way to allocate
                 int victim_way = -1;
 
@@ -333,6 +394,7 @@ public:
 
                             // Write back if dirty
                             if (dirty_bit == 1) {
+                                ++writebacks;
                                 int write_resp;
                                 if (next_cache != nullptr) {
                                     next_cache->cache_write(eblk_addr, write_resp);
@@ -388,155 +450,116 @@ public:
     }
 
 void cache_write(uint64_t addr, int &resp_out) {
-    uint32_t addr32 = (uint32_t)addr;
-    uint32_t blk_mask = (blk_offset_bits == 0) ? 0U : ((1U << blk_offset_bits) - 1U);
-    int blk_offset = (blk_offset_bits == 0) ? 0 : (addr32 & blk_mask);
-    int set_idx = (blk_offset_bits == 32) ? 0 : ((addr32 >> blk_offset_bits) & ((1U << index_bits) - 1U));
-    int tag_val = (addr32 >> (blk_offset_bits + index_bits)) & ((1U << tag_bits) - 1U);
-
-    if (set_idx < 0 || set_idx >= set_size) {
-        cerr << "Error: set_idx out of range in cache_write: " << set_idx << endl;
-        resp_out = 0;
-        return;
-    }
-
-    if (assoc == 1) {
-        // ---------- DIRECT-MAPPED WRITE ----------
-        int metadata = cache[set_idx][0][1];
-        int stored_tag = cache[set_idx][0][0];
-
-        if (stored_tag == tag_val && get_valid(metadata) == 1) {
-            // HIT — mark dirty
-            metadata = set_dirty(metadata, 1);
-            cache[set_idx][0][1] = metadata;
-            resp_out = 1;
-        } else {
-            // MISS — need to fetch (write-allocate)
-            // Write back dirty victim if necessary
-            if (get_valid(metadata) == 1 && stored_tag != tag_val && get_dirty(metadata) == 1) {
-                int blk_offset_evict = get_blk_offset(metadata);
-                uint64_t eblk_addr = ((uint64_t)stored_tag << (index_bits + blk_offset_bits)) |
-                                     ((uint64_t)set_idx << blk_offset_bits) |
-                                     (uint64_t)blk_offset_evict;
-                int write_resp;
-                if (next_cache != nullptr) {
-                    next_cache->cache_write(eblk_addr, write_resp);
-                    if (write_resp != 1) {
-                        cerr << "Error: Write-back to lower level failed." << endl;
-                        exit(EXIT_FAILURE);
-                    }
-                }
-            }
-
-            // Fetch new block (write allocate)
-            addr_out = addr;
-            if (next_cache != nullptr)
-                next_cache->cache_read(addr_out, resp_out);
-            else
-                resp_out = 1; // main memory always succeeds
-
-            if (resp_out == 1) {
-                // Install new block and mark dirty
-                cache[set_idx][0][0] = tag_val;
-                metadata = 0;
-                metadata = set_blk_offset(metadata, blk_offset);
-                metadata = set_dirty(metadata, 1);  // dirty because write
-                metadata = set_lru(metadata, 0);
-                metadata = set_valid(metadata, 1);
-                cache[set_idx][0][1] = metadata;
-            }
-        }
-    } else if (assoc > 1) {
-        // ---------- SET-ASSOCIATIVE WRITE ----------
-        bool found = false;
-        int hit_way = -1;
-
-        for (int w = 0; w < assoc; w++) {
-            if (w >= way_size) break;
-            int metadata = cache[set_idx][w][1];
-            int stored_tag = cache[set_idx][w][0];
-
-            if (stored_tag == tag_val && get_valid(metadata) == 1) {
-                // HIT — mark as dirty, update LRU
-                metadata = set_dirty(metadata, 1);
-                cache[set_idx][w][1] = metadata;
-
-                int old_lru = get_lru(metadata);
-                lru_update(old_lru, set_idx);
-
-                resp_out = 1;
-                found = true;
-                hit_way = w;
-                break;
-            }
-        }
-
-        if (!found) {
-            // MISS — Write-Allocate
-            int victim_way = -1;
-
-            // Try to find invalid line first
-            for (int w = 0; w < assoc; w++) {
-                if (w >= way_size) break;
-                int metadata = cache[set_idx][w][1];
-                if (get_valid(metadata) == 0) {
-                    victim_way = w;
-                    break;
-                }
-            }
-
-            // If no invalid way, evict LRU
-            if (victim_way == -1) {
-                int dirty_bit;
-                uint64_t eblk_addr;
-                lru_order(set_idx, dirty_bit, eblk_addr);
-
-                // Find which way is LRU
-                for (int w = 0; w < assoc; w++) {
-                    if (w >= way_size) break;
-                    int metadata = cache[set_idx][w][1];
-                    if (get_lru(metadata) == assoc - 1) {
-                        victim_way = w;
-
-                        if (dirty_bit == 1) {
-                            int write_resp;
-                            if (next_cache != nullptr) {
-                                next_cache->cache_write(eblk_addr, write_resp);
-                                if (write_resp != 1) {
-                                    cerr << "Error: Write-back to lower level failed." << endl;
-                                    exit(EXIT_FAILURE);
-                                }
-                            }
-                        }
-                        break;
-                    }
-                }
-            }
-
-            // Fetch from lower level (write-allocate)
-            addr_out = addr;
-            if (next_cache != nullptr)
-                next_cache->cache_read(addr_out, resp_out);
-            else
-                resp_out = 1;
-
-            if (resp_out == 1 && victim_way != -1) {
-                // Install new block and mark dirty
-                cache[set_idx][victim_way][0] = tag_val;
-
-                int metadata = 0;
-                metadata = set_blk_offset(metadata, blk_offset);
-                metadata = set_lru(metadata, 0);
-                metadata = set_dirty(metadata, 1); // dirty because write
-                metadata = set_valid(metadata, 1);
-                cache[set_idx][victim_way][1] = metadata;
-
-                // Update other LRUs
-                lru_update(0, set_idx);
-            }
-        }
-    }
-}
+       int blk_offset = addr & ((1 << blk_offset_bits) - 1);
+       int set_idx = (addr >> blk_offset_bits) & ((1 << index_bits) - 1);
+       int tag_val = (addr >> (blk_offset_bits + index_bits)) & ((1 << tag_bits) - 1);
+       ++writes;
+       if (assoc == 1) {
+           int metadata = cache[set_idx][0][1];
+           int stored_tag = cache[set_idx][0][0];
+           if (stored_tag == tag_val && get_valid(metadata) == 1) {
+               // HIT - mark as dirty
+               metadata = set_dirty(metadata, 1);
+               cache[set_idx][0][1] = metadata;
+               resp_out = 1;
+           } else {
+               ++write_misses;
+               // MISS - evict if necessary
+               if (get_valid(metadata) == 1 && stored_tag != tag_val) {
+                   if (get_dirty(metadata) == 1) {
+                       ++writebacks;
+                       int blk_offset_evict = get_blk_offset(metadata);
+                       uint64_t eblk_addr = ((uint64_t)stored_tag << (index_bits + blk_offset_bits)) | 
+                                            ((uint64_t)set_idx << blk_offset_bits) | 
+                                            (uint64_t)blk_offset_evict;
+                       int write_resp;
+                       if (next_cache != nullptr) {
+                           next_cache->cache_write(eblk_addr, write_resp);
+                           if (write_resp != 1) {
+                               cerr << "Error: Write-back to lower level failed." << endl;
+                               exit(EXIT_FAILURE);
+                           }
+                       }
+                   }
+               }
+               // Fetch and mark dirty
+               addr_out = addr;
+               cache_miss_read(addr_out, resp_out);
+               if (resp_out == 1) {
+                   cache[set_idx][0][0] = tag_val;
+                   metadata = 0;
+                   metadata = set_blk_offset(metadata, blk_offset);
+                   metadata = set_lru(metadata, 0);
+                   metadata = set_dirty(metadata, 1);  // Mark dirty on write
+                   metadata = set_valid(metadata, 1);
+                   cache[set_idx][0][1] = metadata;
+               }
+           }
+       } else if (assoc > 1) {
+           bool found = false;
+           int hit_way = -1;
+           for (int w = 0; w < assoc; w++) {
+               int metadata = cache[set_idx][w][1];
+               int stored_tag = cache[set_idx][w][0];
+               if (stored_tag == tag_val && get_valid(metadata) == 1) {
+                   found = true;
+                   hit_way = w;
+                   int old_lru = get_lru(metadata);
+                   metadata = set_dirty(metadata, 1);
+                   cache[set_idx][w][1] = metadata;
+                   resp_out = 1;
+                   lru_update(old_lru, set_idx);
+                   break;
+               }
+           }
+           if (!found) {
+               ++write_misses;
+               int victim_way = -1;
+               for (int w = 0; w < assoc; w++) {
+                   int metadata = cache[set_idx][w][1];
+                   if (get_valid(metadata) == 0) {
+                       victim_way = w;
+                       break;
+                   }
+               }
+               if (victim_way == -1) {
+                   int dirty_bit;
+                   uint64_t eblk_addr;
+                   lru_order(set_idx, dirty_bit, eblk_addr);
+                   for (int w = 0; w < assoc; w++) {
+                       int metadata = cache[set_idx][w][1];
+                       if (get_lru(metadata) == assoc - 1) {
+                           victim_way = w;
+                           if (dirty_bit == 1) {
+                               ++writebacks;
+                               int write_resp;
+                               if (next_cache != nullptr) {
+                                   next_cache->cache_write(eblk_addr, write_resp);
+                                   if (write_resp != 1) {
+                                       cerr << "Error: Write-back to lower level failed." << endl;
+                                       exit(EXIT_FAILURE);
+                                   }
+                               }
+                           }
+                           break;
+                       }
+                   }
+               }
+               addr_out = addr;
+               cache_miss_read(addr_out, resp_out);
+               if (resp_out == 1 && victim_way != -1) {
+                   cache[set_idx][victim_way][0] = tag_val;
+                   int metadata = 0;
+                   metadata = set_blk_offset(metadata, blk_offset);
+                   metadata = set_lru(metadata, 0);  // MRU
+                   metadata = set_dirty(metadata, 1);
+                   metadata = set_valid(metadata, 1);
+                   cache[set_idx][victim_way][1] = metadata;
+                   lru_update(0, set_idx);
+               }
+           }
+       }
+   }
 }; // end cache_wrapper
 
 class cache_interface {
@@ -626,6 +649,36 @@ int main(int argc, char *argv[]) {
          cache_sys->L1->cache_write((uint64_t)addr, resp);
       }
    }
+
+   cache_sys->L1->print_contents();
+   if (cache_sys->L2 != nullptr) {
+       cache_sys->L2->print_contents();
+   }
+   cout << "\n===== Measurements =====\n";
+   auto L1 = cache_sys->L1;
+   auto L2 = cache_sys->L2;
+   double l1_miss_rate = (L1->reads + L1->writes > 0) ? static_cast<double>(L1->read_misses + L1->write_misses) / (L1->reads + L1->writes) : 0.0;
+   double l2_miss_rate = (L2 && L2->reads > 0) ? static_cast<double>(L2->read_misses) / L2->reads : 0.0;
+   uint64_t mem_traffic = (L2) ? L2->read_misses + L2->write_misses + L2->writebacks : L1->read_misses + L1->write_misses + L1->writebacks;
+   cout << "a. L1 reads:                   " << L1->reads << endl;
+   cout << "b. L1 read misses:             " << L1->read_misses << endl;
+   cout << "c. L1 writes:                  " << L1->writes << endl;
+   cout << "d. L1 write misses:            " << L1->write_misses << endl;
+   cout << "e. L1 miss rate:               " << fixed << setprecision(4) << l1_miss_rate << endl;
+   cout << "f. L1 writebacks:              " << L1->writebacks << endl;
+   cout << "g. L1 prefetches:              " << L1->prefetches << endl;
+   if (L2) {
+       cout << "h. L2 reads (demand):          " << L2->reads << endl;
+       cout << "i. L2 read misses (demand):    " << L2->read_misses << endl;
+       cout << "j. L2 reads (prefetch):        " << 0 << endl;
+       cout << "k. L2 read misses (prefetch):  " << 0 << endl;
+       cout << "l. L2 writes:                  " << L2->writes << endl;
+       cout << "m. L2 write misses:            " << L2->write_misses << endl;
+       cout << "n. L2 miss rate:               " << fixed << setprecision(4) << l2_miss_rate << endl;
+       cout << "o. L2 writebacks:              " << L2->writebacks << endl;
+       cout << "p. L2 prefetches:              " << L2->prefetches << endl;
+   } 
+   cout << "q. memory traffic:             " << mem_traffic << endl;
 
     delete cache_sys;
     fclose(fp);

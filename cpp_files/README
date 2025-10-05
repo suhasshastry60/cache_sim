@@ -4,6 +4,7 @@
 
    To run without throttling output:
    ./sim 32 8192 4 262144 8 3 10 ../example_trace.txt
+   ./sim 16 1024 1 8192 4 0 0 ../example_trace.txt > echo_trace.txt
 
    To run with throttling (via "less"):
    ./sim 32 8192 4 262144 8 3 10 ../example_trace.txt | less
