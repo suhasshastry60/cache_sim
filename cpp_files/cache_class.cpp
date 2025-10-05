@@ -130,12 +130,25 @@ public:
                     cache_hit_read(tag_val, resp_out);  // HIT in this level
                 } else {
                     // Tag matches but not valid - MISS
-                    addr_out = addr_in;  // Send address to next level
+                    addr_out = addr;  // Send address to next level
                     cache_miss_read(addr_out, resp_out);  // Query next level
+
+                    if (resp_out == 1) {  // If lower level returned a hit
+                        cache[set_idx][0][0] = tag_val;  // Allocate new tag
+                        // Build metadata using helper functions
+                        int metadata = 0;  // Start with all zeros
+                        metadata = set_blk_offset(metadata, blk_offset);  // Set block offset
+                        metadata = set_lru(metadata, 0);                  // Set LRU = 0
+                        metadata = set_dirty(metadata, 0);                // Set dirty = 0
+                        metadata = set_valid(metadata, 1);                // Set valid = 1
+                        
+                        cache[set_idx][0][1] = metadata;  // Store metadata                    
+                    }
                 }
-            } else {
+            }
+             else {
                 // Tag not found - MISS
-                addr_out = addr_in;  // Send address to next level
+                addr_out = addr;  // Send address to next level
                 cache_miss_read(addr_out, resp_out);  // Query next level
 
                 if (resp_out == 1) {  // If lower level returned a hit
@@ -158,9 +171,7 @@ public:
                     if (get_valid(metadata) == 1) {  // Check valid bit
                         cache_hit_read(tag_val, resp_out);  // HIT in this level
                     } else {
-                        // We need to add lru stuff here
-                        // identify LRU way to evict and replace`
-                        addr_out = addr_in;  // Send address to next level
+                        addr_out = addr;  // Send address to next level
                         cache_miss_read(addr_out, resp_out);  // Query next level
 
                         if (resp_out == 1) {  // If lower level returned a hit
@@ -171,11 +182,17 @@ public:
                         metadata = set_lru(metadata, 0);                  // Set LRU = 0
                         metadata = set_dirty(metadata, 0);                // Set dirty = 0
                         metadata = set_valid(metadata, 1);                // Set valid = 1
-
+                        // After updating the lru of this way, increment lru of others
+                        //No need to worry about dirty bit as this block is invalid in the first place
                         cache[set_idx][w][1] = metadata;  // Store metadata
                 }
                     }
-                    break;
+                    return;  // Exit after handling hit/miss
+                }
+                else {
+                    // Find the highest LRU way for replacement, check if they are invalid or dirty, if so get its tag,index and blk_offset, concat and make addr_out.
+                    //do a writeback and then allocate the new block
+                    
                 }
             }
         }
@@ -214,5 +231,43 @@ public:
         // }
     }
     
+
+void lru_order(int set, int assoc, int &dirty, uint64_t &eblk_addr) {
+    // eblk_addr is the address of the block to be evicted
+    for (int way = 0; way < assoc; way++) {  
+        int new_meta = cache[set][way][1];
+        int new_tag = cache[set][way][0];
+        
+        if (get_lru(new_meta) == assoc - 1) {  
+            dirty = get_dirty(new_meta);
+            int blk_offset = get_blk_offset(new_meta);
+            
+            // Reconstruct address: {tag, set, blk_offset}
+            eblk_addr = ((uint64_t)new_tag << (index_bits + blk_offset_bits)) |
+                        ((uint64_t)set << blk_offset_bits) |
+                        (uint64_t)blk_offset;
+            return;  // Found the LRU block, exit
+        }
+    }
+}
+
+void lru_update(int hit_value, int set, int assoc) {
+    for (int way = 0; way < assoc; way++) {  // Fixed: should be way < assoc, not assoc-1
+        int new_meta = cache[set][way][1];
+        int current_lru = get_lru(new_meta);
+        
+        if (current_lru == hit_value) {
+            // The way that was just accessed - set to MRU (0)
+            new_meta = set_lru(new_meta, 0);
+            cache[set][way][1] = new_meta;
+        } else if (current_lru < hit_value) {
+            // Ways that were more recently used than the hit - increment their LRU
+            new_meta = set_lru(new_meta, current_lru + 1);
+            cache[set][way][1] = new_meta;
+        }
+        // If current_lru > hit_value, no change needed
+    }
+}
+
     void cache_write(uint64_t addr, int &resp_out);
 };

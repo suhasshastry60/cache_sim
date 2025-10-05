@@ -52,6 +52,39 @@ void decode_addr(uint64_t addr_in, int size, int assoc, int blk_size,
 
 }
 
+function lru_order(input set,assoc, output dirty, eblk_addr){
+//eblk_addr is the address of the block to be evicted
+for (int way =0; way<assoc-1;way++){
+   new_meta = cache[set][way][1];
+   new_tag = cache[set][way][0];
+
+   if (get_lru(new_meta) == max(assoc)-1){
+      dirty = get_dirty(new_meta);
+      blk_offset = get_blk_offset(new_meta);
+      eblk_addr = {new_tag, set, blk_offset};
+      }
+   else
+   continue;
+   }
+}
+
+function lru_update(input hit_value,set, assoc, output update_done){
+   for (int way =0; way<assoc-1;way++){
+      new_meta = cache[set][way][1];
+      if (get_lru(new_meta) == hit_value){
+         set_lru(new_meta,0);
+         cache[set][way][1] = new_meta;
+      else if (get_lru(new_meta) < hit_value){
+         old_lru = get_lru(new_meta);
+         set_lru(new_meta,old_lru+1);
+         cache[set][way][1] = new_meta;
+      }
+      }
+            else continue;
+}
+
+
+
 function cache_miss_read();
 input cache_num,addr_out
 output resp_in,
