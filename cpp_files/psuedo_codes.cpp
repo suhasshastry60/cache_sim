@@ -57,3 +57,5 @@ input cache_num,addr_out
 output resp_in,
 
    cache_$"cache_num".cache_read(addr_out,resp_in)
+
+   cache[set][way][0] = tag
