@@ -51,3 +51,9 @@ void decode_addr(uint64_t addr_in, int size, int assoc, int blk_size,
 }
 
 }
+
+function cache_miss_read();
+input cache_num,addr_out
+output resp_in,
+
+   cache_$"cache_num".cache_read(addr_out,resp_in)
