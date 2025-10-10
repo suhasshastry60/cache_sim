@@ -65,7 +65,7 @@ public:
 
         decode_addr(addr_in, tag_bits, index_bits, blk_offset_bits);
 
-        lru_bits = (assoc > 1) ? (int)ceil(log2((double)assoc)) : 0;
+        lru_bits = (assoc > 1) ? (int)ceil(log2((double)assoc)) : 0; //change, dumber
         metadata_width = 2 + lru_bits + blk_offset_bits;
 
         // guard index_bits (reasonable range)
@@ -84,9 +84,8 @@ public:
 
         cache.resize(set_size, vector<vector<int>>(way_size, vector<int>(2, 0)));
 
-        // Note: intentionally not issuing read/write here — follow your original design
     }
-
+// move to header, simplify the error messages, make it human, can remove safety measures, seems too well thought out
     void decode_addr(uint64_t addr_in_local, int &tag, int &index_bits_local, int &blk_offset_bits_local) {
         // Validate basic params
         if (blk_size == 0) {
@@ -102,7 +101,7 @@ public:
             exit(EXIT_FAILURE);
         }
 
-        if (addr_in_local > ((1ULL << 32) - 1ULL)) {
+        if (addr_in_local > ((1ULL << 32) - 1ULL)) { //could restrict to 32 bit address space, use 2**32 -1
             cerr << "Error: Address exceeds 32-bit limit. Terminating execution." << endl;
             exit(EXIT_FAILURE);
         }
@@ -144,7 +143,7 @@ public:
         }
     }
 
-    // Helper functions to access metadata fields
+    // Helper functions to access metadata fields, move everything to header
     int get_valid(int metadata) const {
         return metadata & 0x1;
     }
@@ -197,7 +196,7 @@ public:
             int new_meta = cache[set][way][1];
             int new_tag = cache[set][way][0];
 
-            if (get_lru(new_meta) == assoc - 1) {
+            if (get_lru(new_meta) == assoc - 1) { //Add the && get_valid(new_meta) == 1 check
                 dirty = get_dirty(new_meta);
                 int blk_offset = get_blk_offset(new_meta);
 
@@ -226,6 +225,26 @@ public:
             }
         }
     }
+    void lru_insert(int set, int new_way) {
+        for (int w = 0; w < assoc; w++) {
+            if (set < 0 || set >= set_size || w < 0 || w >= way_size) continue;
+            int meta = cache[set][w][1];
+
+            // Skip invalid ways
+            if (get_valid(meta) == 0) continue;
+
+            int curr_lru = get_lru(meta);
+            // Increment all valid ones
+            meta = set_lru(meta, curr_lru + 1);
+            cache[set][w][1] = meta;
+        }
+
+        // Finally set the new one to MRU = 0
+        int new_meta = cache[set][new_way][1];
+        new_meta = set_lru(new_meta, 0);
+        cache[set][new_way][1] = new_meta;
+    }
+
 
     void print_contents() const {
         cout << "===== " << (cache_num == 1 ? "L1" : "L2") << " contents =====\n";
@@ -241,7 +260,7 @@ public:
             cout << endl;
         }
     }
-
+//change uint64_t to uint32_t, get rid of all conversion stuff, can simplify the logic a bit
     void cache_read(uint64_t addr, int &resp_out) {
         uint32_t addr32 = (uint32_t)addr;
         uint32_t blk_mask = (blk_offset_bits == 0) ? 0U : ((1U << blk_offset_bits) - 1U);
@@ -250,7 +269,7 @@ public:
         int tag_val = (addr32 >> (blk_offset_bits + index_bits)) & ((1U << tag_bits) - 1U);
 
         ++reads;
-
+//can remove these safety checks
         if (set_idx < 0 || set_idx >= set_size) {
             cerr << "Error: set_idx out of range in cache_read: " << set_idx << endl;
             resp_out = 0;
@@ -265,6 +284,7 @@ public:
             if (stored_tag == tag_val && get_valid(metadata) == 1) {
                 // Tag matches AND valid - HIT
                 cache_hit_read(tag_val, resp_out);
+                //increment cache hits counter, cache_hit_read++
             } else {
                 ++read_misses;
                 // MISS - either tag doesn't match or not valid
@@ -310,10 +330,10 @@ public:
         } else if (assoc > 1) {
             // Set associative: check all ways
             bool found = false;
-            int hit_way = -1;
+            int hit_way = -1; //why is it -1
 
             for (int w = 0; w < assoc; w++) {
-                if (w >= way_size) break;
+                if (w >= way_size) break; //can remove
                 int metadata = cache[set_idx][w][1];
                 int stored_tag = cache[set_idx][w][0];
 
@@ -322,6 +342,7 @@ public:
                     found = true;
                     hit_way = w;
                     cache_hit_read(tag_val, resp_out);
+                    //increment cache hits counter, cache_hit_read++
 
                     // Update LRU
                     int old_lru = get_lru(metadata);
@@ -355,7 +376,7 @@ public:
                     for (int w = 0; w < assoc; w++) {
                         if (w >= way_size) break;
                         int metadata = cache[set_idx][w][1];
-                        if (get_lru(metadata) == assoc - 1) {
+                        if (get_lru(metadata) == assoc - 1 && get_valid(metadata) == 1) {
                             victim_way = w;
 
                             // Write back if dirty
@@ -385,14 +406,14 @@ public:
 
                     int metadata = 0;
                     metadata = set_blk_offset(metadata, blk_offset);
-                    metadata = set_lru(metadata, 0);  // MRU
+                    // metadata = set_lru(metadata, 0);  // MRU
                     metadata = set_dirty(metadata, 0);
                     metadata = set_valid(metadata, 1);
 
                     cache[set_idx][victim_way][1] = metadata;
 
                     // Update all other LRUs
-                    lru_update(0, set_idx);
+                    lru_insert(set_idx, victim_way);
                 }
             }
         }
