@@ -337,7 +337,6 @@ void print_contents() const {
         } else if (assoc > 1) {
             // Set associative: check all ways
             bool found = false;
-            int hit_way = -1; //why is it -1
 
             for (int w = 0; w < assoc; w++) {
                 if (w >= way_size) break; //can remove
@@ -347,7 +346,6 @@ void print_contents() const {
                 if (stored_tag == tag_val && get_valid(metadata) == 1) {
                     // HIT
                     found = true;
-                    hit_way = w;
                     cache_hit_read(tag_val, resp_out);
                     //increment cache hits counter, cache_hit_read++
 
@@ -361,7 +359,6 @@ void print_contents() const {
             if (!found) {
                 ++read_misses;
                 int victim_way = -1;
-                bool inserted_invalid = false;
 
                 // 1. Try to find an invalid way
                 for (int w = 0; w < assoc; w++) {
@@ -369,7 +366,6 @@ void print_contents() const {
                     uint32_t metadata = cache[set_idx][w][1];
                     if (get_valid(metadata) == 0) {
                         victim_way = w;
-                        inserted_invalid = true;
                         break;
                     }
                 }
@@ -496,7 +492,6 @@ void print_contents() const {
         } else if (assoc > 1) {
             bool found = false;
             int victim_way = -1;
-            bool inserted_invalid = false;
 
             for (int w = 0; w < assoc; w++) {
                 uint32_t metadata = cache[set_idx][w][1];
@@ -518,7 +513,6 @@ void print_contents() const {
                     uint32_t metadata = cache[set_idx][w][1];
                     if (get_valid(metadata) == 0) {
                         victim_way = w;
-                        inserted_invalid = true; // ✅ mark insertion into invalid way
                         break;
                     }
                 }
