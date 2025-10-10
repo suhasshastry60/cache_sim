@@ -23,8 +23,9 @@ using namespace std;
 class cache_wrapper {
 public:
     int size, assoc, blk_size;
-    uint64_t addr_in;
-    int tag_out, addr_out, resp_in, resp_out, cache_num;
+    uint32_t addr_in;
+    uint32_t addr_out;
+    int tag_out, resp_in, resp_out, cache_num;
     char operation;
     cache_wrapper* next_cache;  // Pointer to next level cache
 
@@ -36,14 +37,14 @@ public:
     int tag_bits, index_bits, blk_offset_bits;
     int lru_bits;
     int metadata_width;
-    uint64_t reads = 0;
-    uint64_t read_misses = 0;
-    uint64_t writes = 0;
-    uint64_t write_misses = 0;
-    uint64_t writebacks = 0;
-    uint64_t prefetches = 0;
+    uint32_t reads = 0;
+    uint32_t read_misses = 0;
+    uint32_t writes = 0;
+    uint32_t write_misses = 0;
+    uint32_t writebacks = 0;
+    uint32_t prefetches = 0;
 
-    cache_wrapper(int size, int assoc, int blk_size, uint64_t addr_in,
+    cache_wrapper(int size, int assoc, int blk_size, uint32_t addr_in,
                   int tag_out, int addr_out, int resp_in, int cache_num,
                   char operation, cache_wrapper* next = nullptr) {
         this->size = size;
@@ -86,7 +87,7 @@ public:
 
     }
 // move to header, simplify the error messages, make it human, can remove safety measures, seems too well thought out
-    void decode_addr(uint64_t addr_in_local, int &tag, int &index_bits_local, int &blk_offset_bits_local) {
+    void decode_addr(uint32_t addr_in_local, int &tag, int &index_bits_local, int &blk_offset_bits_local) {
         // Validate basic params
         if (blk_size == 0) {
             cerr << "Error: blk_size cannot be 0\n";
@@ -107,6 +108,7 @@ public:
         }
 
         int num_sets = size / (assoc * blk_size);
+        cout<<"Number of sets: "<<num_sets<<endl;
         if (num_sets <= 0) {
             cerr << "Error: computed num_sets <= 0. Check size, assoc, blk_size.\n";
             exit(EXIT_FAILURE);
@@ -190,7 +192,7 @@ public:
         return metadata;
     }
 
-    void lru_order(int set, int &dirty, uint64_t &eblk_addr) {
+    void lru_order(int set, int &dirty, uint32_t &eblk_addr) {
         for (int way = 0; way < assoc; way++) {
             if (set < 0 || set >= set_size || way < 0 || way >= way_size) continue;
             int new_meta = cache[set][way][1];
@@ -200,9 +202,9 @@ public:
                 dirty = get_dirty(new_meta);
                 int blk_offset = get_blk_offset(new_meta);
 
-                eblk_addr = ((uint64_t)new_tag << (index_bits + blk_offset_bits)) |
-                            ((uint64_t)set << blk_offset_bits) |
-                            (uint64_t)blk_offset;
+                eblk_addr = (new_tag << (index_bits + blk_offset_bits)) |
+                            (set << blk_offset_bits) |
+                            blk_offset;
                 return;
             }
         }
@@ -267,13 +269,12 @@ void print_contents() const {
     cout << dec; // reset to decimal for future output
 }
 
-//change uint64_t to uint32_t, get rid of all conversion stuff, can simplify the logic a bit
-    void cache_read(uint64_t addr, int &resp_out) {
-        uint32_t addr32 = (uint32_t)addr;
+//change uint32_t to uint32_t, get rid of all conversion stuff, can simplify the logic a bit
+    void cache_read(uint32_t addr, int &resp_out) {
         uint32_t blk_mask = (blk_offset_bits == 0) ? 0U : ((1U << blk_offset_bits) - 1U);
-        int blk_offset = (blk_offset_bits == 0) ? 0 : (addr32 & blk_mask);
-        int set_idx = (blk_offset_bits == 32) ? 0 : ((addr32 >> blk_offset_bits) & ((1U << index_bits) - 1U));
-        int tag_val = (addr32 >> (blk_offset_bits + index_bits)) & ((1U << tag_bits) - 1U);
+        int blk_offset = (blk_offset_bits == 0) ? 0 : (addr & blk_mask);
+        int set_idx = (blk_offset_bits == 32) ? 0 : ((addr >> blk_offset_bits) & ((1U << index_bits) - 1U));
+        int tag_val = (addr >> (blk_offset_bits + index_bits)) & ((1U << tag_bits) - 1U);
 
         ++reads;
 //can remove these safety checks
@@ -302,9 +303,9 @@ void print_contents() const {
                         ++writebacks;
                         // Dirty block - write back to lower level
                         int blk_offset_evict = get_blk_offset(metadata);
-                        uint64_t eblk_addr = ((uint64_t)stored_tag << (index_bits + blk_offset_bits)) |
-                                             ((uint64_t)set_idx << blk_offset_bits) |
-                                             (uint64_t)blk_offset_evict;
+                        uint32_t eblk_addr = (stored_tag << (index_bits + blk_offset_bits)) |
+                                             (set_idx << blk_offset_bits) |
+                                             blk_offset_evict;
 
                         int write_resp;
                         if (next_cache != nullptr) {
@@ -377,7 +378,7 @@ void print_contents() const {
                 // 2. If no invalid way → LRU replacement
                 if (victim_way == -1) {
                     int dirty_bit;
-                    uint64_t eblk_addr;
+                    uint32_t eblk_addr;
                     lru_order(set_idx, dirty_bit, eblk_addr);
 
                     for (int w = 0; w < assoc; w++) {
@@ -438,7 +439,7 @@ void print_contents() const {
         return;
     }
 
-    void cache_miss_read(uint64_t addr_out_local, int &resp_out) {
+    void cache_miss_read(uint32_t addr_out_local, int &resp_out) {
         if (next_cache != nullptr) {
             // Call next level's cache_read
             next_cache->cache_read(addr_out_local, resp_out);
@@ -449,7 +450,7 @@ void print_contents() const {
         }
     }
 
-    void cache_write(uint64_t addr, int &resp_out) {
+    void cache_write(uint32_t addr, int &resp_out) {
         int blk_offset = addr & ((1 << blk_offset_bits) - 1);
         int set_idx = (addr >> blk_offset_bits) & ((1 << index_bits) - 1);
         int tag_val = (addr >> (blk_offset_bits + index_bits)) & ((1 << tag_bits) - 1);
@@ -468,9 +469,9 @@ void print_contents() const {
                     if (get_dirty(metadata) == 1) {
                         ++writebacks;
                         int blk_offset_evict = get_blk_offset(metadata);
-                        uint64_t eblk_addr = ((uint64_t)stored_tag << (index_bits + blk_offset_bits)) | 
-                                            ((uint64_t)set_idx << blk_offset_bits) | 
-                                            (uint64_t)blk_offset_evict;
+                        uint32_t eblk_addr = (stored_tag << (index_bits + blk_offset_bits)) | 
+                                            (set_idx << blk_offset_bits) | 
+                                            blk_offset_evict;
                         int write_resp;
                         if (next_cache != nullptr) {
                             next_cache->cache_write(eblk_addr, write_resp);
@@ -525,7 +526,7 @@ void print_contents() const {
 
                 if (victim_way == -1) {
                     int dirty_bit;
-                    uint64_t eblk_addr;
+                    uint32_t eblk_addr;
                     lru_order(set_idx, dirty_bit, eblk_addr);
                     for (int w = 0; w < assoc; w++) {
                         int metadata = cache[set_idx][w][1];
@@ -557,7 +558,7 @@ void print_contents() const {
                     metadata = set_valid(metadata, 1);
                     cache[set_idx][victim_way][1] = metadata;
 
-                    // ✅ Updated LRU handling
+                    // Updated LRU handling
                     if (inserted_invalid) {
                         lru_insert(set_idx, victim_way);
                     } else {
@@ -640,9 +641,9 @@ int main(int argc, char *argv[]) {
     int resp;
 while (fscanf(fp, " %c %x", &rw, &addr) == 2) {
     if (rw == 'r') {
-        cache_sys->L1->cache_read((uint64_t)addr, resp);
+        cache_sys->L1->cache_read(addr, resp);
     } else if (rw == 'w') {
-        cache_sys->L1->cache_write((uint64_t)addr, resp);
+        cache_sys->L1->cache_write(addr, resp);
     } else {
         printf("Error: Unknown request type %c.\n", rw);
         exit(EXIT_FAILURE);
@@ -665,31 +666,31 @@ while (fscanf(fp, " %c %x", &rw, &addr) == 2) {
     double l2_miss_rate = (L2 && L2->reads > 0) ?
         static_cast<double>(L2->read_misses) / L2->reads : 0.0;
 
-    uint64_t mem_traffic = (L2) ?
+    uint32_t mem_traffic = (L2) ?
         L2->read_misses + L2->write_misses + L2->writebacks :
         L1->read_misses + L1->write_misses + L1->writebacks;
 
-    printf("a. L1 reads:                   %lu\n", L1->reads);
-    printf("b. L1 read misses:             %lu\n", L1->read_misses);
-    printf("c. L1 writes:                  %lu\n", L1->writes);
-    printf("d. L1 write misses:            %lu\n", L1->write_misses);
+    printf("a. L1 reads:                   %u\n", L1->reads);
+    printf("b. L1 read misses:             %u\n", L1->read_misses);
+    printf("c. L1 writes:                  %u\n", L1->writes);
+    printf("d. L1 write misses:            %u\n", L1->write_misses);
     printf("e. L1 miss rate:               %.4f\n", l1_miss_rate);
-    printf("f. L1 writebacks:              %lu\n", L1->writebacks);
-    printf("g. L1 prefetches:              %lu\n", L1->prefetches);
+    printf("f. L1 writebacks:              %u\n", L1->writebacks);
+    printf("g. L1 prefetches:              %u\n", L1->prefetches);
 
     if (L2) {
-        printf("h. L2 reads (demand):          %lu\n", L2->reads);
-        printf("i. L2 read misses (demand):    %lu\n", L2->read_misses);
+        printf("h. L2 reads (demand):          %u\n", L2->reads);
+        printf("i. L2 read misses (demand):    %u\n", L2->read_misses);
         printf("j. L2 reads (prefetch):        %d\n", 0);
         printf("k. L2 read misses (prefetch):  %d\n", 0);
-        printf("l. L2 writes:                  %lu\n", L2->writes);
-        printf("m. L2 write misses:            %lu\n", L2->write_misses);
+        printf("l. L2 writes:                  %u\n", L2->writes);
+        printf("m. L2 write misses:            %u\n", L2->write_misses);
         printf("n. L2 miss rate:               %.4f\n", l2_miss_rate);
-        printf("o. L2 writebacks:              %lu\n", L2->writebacks);
-        printf("p. L2 prefetches:              %lu\n", L2->prefetches);
+        printf("o. L2 writebacks:              %u\n", L2->writebacks);
+        printf("p. L2 prefetches:              %u\n", L2->prefetches);
     }
 
-    printf("q. memory traffic:             %lu\n", mem_traffic);
+    printf("q. memory traffic:             %u\n", mem_traffic);
 
     delete cache_sys;
     fclose(fp);
