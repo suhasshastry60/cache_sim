@@ -442,117 +442,125 @@ public:
         }
     }
 
-void cache_write(uint64_t addr, int &resp_out) {
-       int blk_offset = addr & ((1 << blk_offset_bits) - 1);
-       int set_idx = (addr >> blk_offset_bits) & ((1 << index_bits) - 1);
-       int tag_val = (addr >> (blk_offset_bits + index_bits)) & ((1 << tag_bits) - 1);
-       ++writes;
-       if (assoc == 1) {
-           int metadata = cache[set_idx][0][1];
-           int stored_tag = cache[set_idx][0][0];
-           if (stored_tag == tag_val && get_valid(metadata) == 1) {
-               // HIT - mark as dirty
-               metadata = set_dirty(metadata, 1);
-               cache[set_idx][0][1] = metadata;
-               resp_out = 1;
-           } else {
-               ++write_misses;
-               // MISS - evict if necessary
-               if (get_valid(metadata) == 1 && stored_tag != tag_val) {
-                   if (get_dirty(metadata) == 1) {
-                       ++writebacks;
-                       int blk_offset_evict = get_blk_offset(metadata);
-                       uint64_t eblk_addr = ((uint64_t)stored_tag << (index_bits + blk_offset_bits)) | 
+    void cache_write(uint64_t addr, int &resp_out) {
+        int blk_offset = addr & ((1 << blk_offset_bits) - 1);
+        int set_idx = (addr >> blk_offset_bits) & ((1 << index_bits) - 1);
+        int tag_val = (addr >> (blk_offset_bits + index_bits)) & ((1 << tag_bits) - 1);
+        ++writes;
+
+        if (assoc == 1) {
+            int metadata = cache[set_idx][0][1];
+            int stored_tag = cache[set_idx][0][0];
+            if (stored_tag == tag_val && get_valid(metadata) == 1) {
+                metadata = set_dirty(metadata, 1);
+                cache[set_idx][0][1] = metadata;
+                resp_out = 1;
+            } else {
+                ++write_misses;
+                if (get_valid(metadata) == 1 && stored_tag != tag_val) {
+                    if (get_dirty(metadata) == 1) {
+                        ++writebacks;
+                        int blk_offset_evict = get_blk_offset(metadata);
+                        uint64_t eblk_addr = ((uint64_t)stored_tag << (index_bits + blk_offset_bits)) | 
                                             ((uint64_t)set_idx << blk_offset_bits) | 
                                             (uint64_t)blk_offset_evict;
-                       int write_resp;
-                       if (next_cache != nullptr) {
-                           next_cache->cache_write(eblk_addr, write_resp);
-                           if (write_resp != 1) {
-                               cerr << "Error: Write-back to lower level failed." << endl;
-                               exit(EXIT_FAILURE);
-                           }
-                       }
-                   }
-               }
-               // Fetch and mark dirty
-               addr_out = addr;
-               cache_miss_read(addr_out, resp_out);
-               if (resp_out == 1) {
-                   cache[set_idx][0][0] = tag_val;
-                   metadata = 0;
-                   metadata = set_blk_offset(metadata, blk_offset);
-                   metadata = set_lru(metadata, 0);
-                   metadata = set_dirty(metadata, 1);  // Mark dirty on write
-                   metadata = set_valid(metadata, 1);
-                   cache[set_idx][0][1] = metadata;
-               }
-           }
-       } else if (assoc > 1) {
-           bool found = false;
-           int hit_way = -1;
-           for (int w = 0; w < assoc; w++) {
-               int metadata = cache[set_idx][w][1];
-               int stored_tag = cache[set_idx][w][0];
-               if (stored_tag == tag_val && get_valid(metadata) == 1) {
-                   found = true;
-                   hit_way = w;
-                   int old_lru = get_lru(metadata);
-                   metadata = set_dirty(metadata, 1);
-                   cache[set_idx][w][1] = metadata;
-                   resp_out = 1;
-                   lru_update(old_lru, set_idx);
-                   break;
-               }
-           }
-           if (!found) {
-               ++write_misses;
-               int victim_way = -1;
-               for (int w = 0; w < assoc; w++) {
-                   int metadata = cache[set_idx][w][1];
-                   if (get_valid(metadata) == 0) {
-                       victim_way = w;
-                       break;
-                   }
-               }
-               if (victim_way == -1) {
-                   int dirty_bit;
-                   uint64_t eblk_addr;
-                   lru_order(set_idx, dirty_bit, eblk_addr);
-                   for (int w = 0; w < assoc; w++) {
-                       int metadata = cache[set_idx][w][1];
-                       if (get_lru(metadata) == assoc - 1) {
-                           victim_way = w;
-                           if (dirty_bit == 1) {
-                               ++writebacks;
-                               int write_resp;
-                               if (next_cache != nullptr) {
-                                   next_cache->cache_write(eblk_addr, write_resp);
-                                   if (write_resp != 1) {
-                                       cerr << "Error: Write-back to lower level failed." << endl;
-                                       exit(EXIT_FAILURE);
-                                   }
-                               }
-                           }
-                           break;
-                       }
-                   }
-               }
-               addr_out = addr;
-               cache_miss_read(addr_out, resp_out);
-               if (resp_out == 1 && victim_way != -1) {
-                   cache[set_idx][victim_way][0] = tag_val;
-                   int metadata = 0;
-                   metadata = set_blk_offset(metadata, blk_offset);
-                   metadata = set_lru(metadata, 0);  // MRU
-                   metadata = set_dirty(metadata, 1);
-                   metadata = set_valid(metadata, 1);
-                   cache[set_idx][victim_way][1] = metadata;
-                   lru_update(0, set_idx);
-               }
-           }
-       }
-   }
+                        int write_resp;
+                        if (next_cache != nullptr) {
+                            next_cache->cache_write(eblk_addr, write_resp);
+                            if (write_resp != 1) {
+                                cerr << "Error: Write-back to lower level failed." << endl;
+                                exit(EXIT_FAILURE);
+                            }
+                        }
+                    }
+                }
+                addr_out = addr;
+                cache_miss_read(addr_out, resp_out);
+                if (resp_out == 1) {
+                    cache[set_idx][0][0] = tag_val;
+                    metadata = 0;
+                    metadata = set_blk_offset(metadata, blk_offset);
+                    metadata = set_lru(metadata, 0);  
+                    metadata = set_dirty(metadata, 1);
+                    metadata = set_valid(metadata, 1);
+                    cache[set_idx][0][1] = metadata;
+                }
+            }
+        } else if (assoc > 1) {
+            bool found = false;
+            int victim_way = -1;
+            bool inserted_invalid = false;
+
+            for (int w = 0; w < assoc; w++) {
+                int metadata = cache[set_idx][w][1];
+                int stored_tag = cache[set_idx][w][0];
+                if (stored_tag == tag_val && get_valid(metadata) == 1) {
+                    found = true;
+                    int old_lru = get_lru(metadata);
+                    metadata = set_dirty(metadata, 1);
+                    cache[set_idx][w][1] = metadata;
+                    resp_out = 1;
+                    lru_update(old_lru, set_idx);
+                    break;
+                }
+            }
+
+            if (!found) {
+                ++write_misses;
+                for (int w = 0; w < assoc; w++) {
+                    int metadata = cache[set_idx][w][1];
+                    if (get_valid(metadata) == 0) {
+                        victim_way = w;
+                        inserted_invalid = true; // ✅ mark insertion into invalid way
+                        break;
+                    }
+                }
+
+                if (victim_way == -1) {
+                    int dirty_bit;
+                    uint64_t eblk_addr;
+                    lru_order(set_idx, dirty_bit, eblk_addr);
+                    for (int w = 0; w < assoc; w++) {
+                        int metadata = cache[set_idx][w][1];
+                        if (get_lru(metadata) == assoc - 1 && get_valid(metadata) == 1) {
+                            victim_way = w;
+                            if (dirty_bit == 1) {
+                                ++writebacks;
+                                int write_resp;
+                                if (next_cache != nullptr) {
+                                    next_cache->cache_write(eblk_addr, write_resp);
+                                    if (write_resp != 1) {
+                                        cerr << "Error: Write-back to lower level failed." << endl;
+                                        exit(EXIT_FAILURE);
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+
+                addr_out = addr;
+                cache_miss_read(addr_out, resp_out);
+                if (resp_out == 1 && victim_way != -1) {
+                    cache[set_idx][victim_way][0] = tag_val;
+                    int metadata = 0;
+                    metadata = set_blk_offset(metadata, blk_offset);
+                    metadata = set_dirty(metadata, 1);
+                    metadata = set_valid(metadata, 1);
+                    cache[set_idx][victim_way][1] = metadata;
+
+                    // ✅ Updated LRU handling
+                    if (inserted_invalid) {
+                        lru_insert(set_idx, victim_way);
+                    } else {
+                        int old_lru = get_lru(cache[set_idx][victim_way][1]);
+                        lru_update(old_lru, set_idx);
+                    }
+                }
+            }
+        }
+    }
 }; // end cache_wrapper
 
 class cache_interface {
