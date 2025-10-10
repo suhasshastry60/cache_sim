@@ -250,12 +250,32 @@ public:
 void print_contents() const {
     cout << "===== " << (cache_num == 1 ? "L1" : "L2") << " contents =====\n";
     for (int s = 0; s < set_size; ++s) {
-        cout << "set " << setw(2) << right << hex << s << ":";
+        cout << "set " << setw(6) << right << dec << s << ":";
 
-        for (int w = 0; w < assoc; ++w) {
-            if (get_valid(cache[s][w][1])) {
-                cout << "   " << setw(6) << cache[s][w][0];
-                if (get_dirty(cache[s][w][1]))
+        // For associative caches, print in LRU order (MRU to LRU)
+        if (assoc > 1) {
+            for (int lru_val = 0; lru_val < assoc; ++lru_val) {
+                bool found = false;
+                for (int w = 0; w < assoc; ++w) {
+                    if (get_valid(cache[s][w][1]) && get_lru(cache[s][w][1]) == lru_val) {
+                        cout << "   " << setw(6) << hex << cache[s][w][0];
+                        if (get_dirty(cache[s][w][1]))
+                            cout << " D";
+                        else
+                            cout << "  ";
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    cout << "       ";
+                }
+            }
+        } else {
+            // Direct-mapped: just print way 0
+            if (get_valid(cache[s][0][1])) {
+                cout << "   " << setw(6) << hex << cache[s][0][0];
+                if (get_dirty(cache[s][0][1]))
                     cout << " D";
                 else
                     cout << "  ";
