@@ -353,26 +353,26 @@ public:
 
             if (!found) {
                 ++read_misses;
-                // MISS - find a way to allocate
                 int victim_way = -1;
+                bool inserted_invalid = false;
 
-                // First, try to find an invalid way
+                // 1. Try to find an invalid way
                 for (int w = 0; w < assoc; w++) {
                     if (w >= way_size) break;
                     int metadata = cache[set_idx][w][1];
                     if (get_valid(metadata) == 0) {
                         victim_way = w;
+                        inserted_invalid = true;
                         break;
                     }
                 }
 
-                // If no invalid way, use LRU
+                // 2. If no invalid way → LRU replacement
                 if (victim_way == -1) {
                     int dirty_bit;
                     uint64_t eblk_addr;
                     lru_order(set_idx, dirty_bit, eblk_addr);
 
-                    // Find the LRU way
                     for (int w = 0; w < assoc; w++) {
                         if (w >= way_size) break;
                         int metadata = cache[set_idx][w][1];
@@ -396,24 +396,30 @@ public:
                     }
                 }
 
-                // Fetch from lower level
-                addr_out = addr;
-                cache_miss_read(addr_out, resp_out);
+                // 3. Fetch from lower level
+                if (victim_way != -1) {
+                    addr_out = addr;
+                    cache_miss_read(addr_out, resp_out);
 
-                if (resp_out == 1 && victim_way != -1) {
-                    // Lower level hit - allocate in victim way
-                    cache[set_idx][victim_way][0] = tag_val;
+                    if (resp_out == 1) {
+                        // Allocate in victim way
+                        cache[set_idx][victim_way][0] = tag_val;
 
-                    int metadata = 0;
-                    metadata = set_blk_offset(metadata, blk_offset);
-                    // metadata = set_lru(metadata, 0);  // MRU
-                    metadata = set_dirty(metadata, 0);
-                    metadata = set_valid(metadata, 1);
+                        int metadata = 0;
+                        metadata = set_blk_offset(metadata, blk_offset);
+                        metadata = set_dirty(metadata, 0);
+                        metadata = set_valid(metadata, 1);
 
-                    cache[set_idx][victim_way][1] = metadata;
+                        cache[set_idx][victim_way][1] = metadata;
 
-                    // Update all other LRUs
-                    lru_insert(set_idx, victim_way);
+                        // 4. Update LRU
+                        if (inserted_invalid) {
+                            lru_insert(set_idx, victim_way);
+                        } else {
+                            int old_lru = get_lru(cache[set_idx][victim_way][1]);
+                            lru_update(old_lru, set_idx);
+                        }
+                    }
                 }
             }
         }
