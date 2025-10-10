@@ -32,7 +32,7 @@ public:
     // Cache storage: cache[set][way][meta_and_data]
     // meta_and_data[0] = tag
     // meta_and_data[1] = metadata {blk_offset, lru, dirty, valid}
-    vector<vector<vector<int>>> cache;
+    vector<vector<vector<uint32_t>>> cache;
     int set_size, way_size;
     int tag_bits, index_bits, blk_offset_bits;
     int lru_bits;
@@ -83,7 +83,7 @@ public:
             exit(EXIT_FAILURE);
         }
 
-        cache.resize(set_size, vector<vector<int>>(way_size, vector<int>(2, 0)));
+        cache.resize(set_size, vector<vector<uint32_t>>(way_size, vector<uint32_t>(2, 0)));
 
     }
 // move to header, simplify the error messages, make it human, can remove safety measures, seems too well thought out
@@ -108,7 +108,6 @@ public:
         }
 
         int num_sets = size / (assoc * blk_size);
-        cout<<"Number of sets: "<<num_sets<<endl;
         if (num_sets <= 0) {
             cerr << "Error: computed num_sets <= 0. Check size, assoc, blk_size.\n";
             exit(EXIT_FAILURE);
@@ -146,48 +145,48 @@ public:
     }
 
     // Helper functions to access metadata fields, move everything to header
-    int get_valid(int metadata) const {
+    int get_valid(uint32_t metadata) const {
         return metadata & 0x1;
     }
 
-    int get_dirty(int metadata) const {
+    int get_dirty(uint32_t metadata) const {
         return (metadata >> 1) & 0x1;
     }
 
-    int get_lru(int metadata) const {
+    int get_lru(uint32_t metadata) const {
         if (lru_bits == 0) return 0;
         int mask = (1 << lru_bits) - 1;
         return (metadata >> 2) & mask;
     }
 
-    int get_blk_offset(int metadata) const {
+    int get_blk_offset(uint32_t metadata) const {
         int shift = 2 + lru_bits;
         if (blk_offset_bits == 0) return 0;
         int mask = (1 << blk_offset_bits) - 1;
         return (metadata >> shift) & mask;
     }
 
-    int set_valid(int metadata, int valid) {
-        metadata = (metadata & ~0x1) | (valid & 0x1);
+    uint32_t set_valid(uint32_t metadata, int valid) {
+        metadata = (metadata & ~0x1U) | (valid & 0x1);
         return metadata;
     }
 
-    int set_dirty(int metadata, int dirty) {
-        metadata = (metadata & ~0x2) | ((dirty & 0x1) << 1);
+    uint32_t set_dirty(uint32_t metadata, int dirty) {
+        metadata = (metadata & ~0x2U) | ((dirty & 0x1) << 1);
         return metadata;
     }
 
-    int set_lru(int metadata, int lru_val) {
+    uint32_t set_lru(uint32_t metadata, int lru_val) {
         if (lru_bits == 0) return metadata;
-        int mask = (1 << lru_bits) - 1;
+        uint32_t mask = (1U << lru_bits) - 1U;
         metadata = (metadata & ~(mask << 2)) | ((lru_val & mask) << 2);
         return metadata;
     }
 
-    int set_blk_offset(int metadata, int blk_off) {
+    uint32_t set_blk_offset(uint32_t metadata, int blk_off) {
         int shift = 2 + lru_bits;
         if (blk_offset_bits == 0) return metadata;
-        int mask = (1 << blk_offset_bits) - 1;
+        uint32_t mask = (1U << blk_offset_bits) - 1U;
         metadata = (metadata & ~(mask << shift)) | ((blk_off & mask) << shift);
         return metadata;
     }
@@ -195,10 +194,9 @@ public:
     void lru_order(int set, int &dirty, uint32_t &eblk_addr) {
         for (int way = 0; way < assoc; way++) {
             if (set < 0 || set >= set_size || way < 0 || way >= way_size) continue;
-            int new_meta = cache[set][way][1];
-            int new_tag = cache[set][way][0];
-
-            if (get_lru(new_meta) == assoc - 1) { //Add the && get_valid(new_meta) == 1 check
+            uint32_t new_meta = cache[set][way][1];
+            uint32_t new_tag = cache[set][way][0];
+            if (get_valid(new_meta) == 1 && get_lru(new_meta) == assoc - 1) {
                 dirty = get_dirty(new_meta);
                 int blk_offset = get_blk_offset(new_meta);
 
@@ -215,7 +213,7 @@ public:
     void lru_update(int hit_value, int set) {
         for (int way = 0; way < assoc; way++) {
             if (set < 0 || set >= set_size || way < 0 || way >= way_size) continue;
-            int new_meta = cache[set][way][1];
+            uint32_t new_meta = cache[set][way][1];
             int current_lru = get_lru(new_meta);
 
             if (current_lru == hit_value) {
@@ -230,19 +228,20 @@ public:
     void lru_insert(int set, int new_way) {
         for (int w = 0; w < assoc; w++) {
             if (set < 0 || set >= set_size || w < 0 || w >= way_size) continue;
-            int meta = cache[set][w][1];
+            if (w == new_way) continue;  // Skip the new way
+            uint32_t meta = cache[set][w][1];
 
             // Skip invalid ways
             if (get_valid(meta) == 0) continue;
 
             int curr_lru = get_lru(meta);
-            // Increment all valid ones
+            // Increment all valid ones except new_way
             meta = set_lru(meta, curr_lru + 1);
             cache[set][w][1] = meta;
         }
 
         // Finally set the new one to MRU = 0
-        int new_meta = cache[set][new_way][1];
+        uint32_t new_meta = cache[set][new_way][1];
         new_meta = set_lru(new_meta, 0);
         cache[set][new_way][1] = new_meta;
     }
@@ -273,8 +272,8 @@ void print_contents() const {
     void cache_read(uint32_t addr, int &resp_out) {
         uint32_t blk_mask = (blk_offset_bits == 0) ? 0U : ((1U << blk_offset_bits) - 1U);
         int blk_offset = (blk_offset_bits == 0) ? 0 : (addr & blk_mask);
-        int set_idx = (blk_offset_bits == 32) ? 0 : ((addr >> blk_offset_bits) & ((1U << index_bits) - 1U));
-        int tag_val = (addr >> (blk_offset_bits + index_bits)) & ((1U << tag_bits) - 1U);
+        int set_idx = (index_bits == 0) ? 0 : ((addr >> blk_offset_bits) & ((1U << index_bits) - 1U));
+        uint32_t tag_val = (addr >> (blk_offset_bits + index_bits)); // use full upper bits, avoid 1<<32
 
         ++reads;
 //can remove these safety checks
@@ -286,8 +285,8 @@ void print_contents() const {
 
         if (assoc == 1) {
             // Direct mapped: only way 0
-            int metadata = cache[set_idx][0][1];
-            int stored_tag = cache[set_idx][0][0];
+            uint32_t metadata = cache[set_idx][0][1];
+            uint32_t stored_tag = cache[set_idx][0][0];
 
             if (stored_tag == tag_val && get_valid(metadata) == 1) {
                 // Tag matches AND valid - HIT
@@ -326,13 +325,13 @@ void print_contents() const {
                     // Lower level hit - allocate in this cache
                     cache[set_idx][0][0] = tag_val;
 
-                    metadata = 0;
-                    metadata = set_blk_offset(metadata, blk_offset);
-                    metadata = set_lru(metadata, 0);
-                    metadata = set_dirty(metadata, 0);  // Clean on read
-                    metadata = set_valid(metadata, 1);
+                    uint32_t new_metadata = 0;
+                    new_metadata = set_blk_offset(new_metadata, blk_offset);
+                    new_metadata = set_lru(new_metadata, 0);
+                    new_metadata = set_dirty(new_metadata, 0);  // Clean on read
+                    new_metadata = set_valid(new_metadata, 1);
 
-                    cache[set_idx][0][1] = metadata;
+                    cache[set_idx][0][1] = new_metadata;
                 }
             }
         } else if (assoc > 1) {
@@ -342,8 +341,8 @@ void print_contents() const {
 
             for (int w = 0; w < assoc; w++) {
                 if (w >= way_size) break; //can remove
-                int metadata = cache[set_idx][w][1];
-                int stored_tag = cache[set_idx][w][0];
+                uint32_t metadata = cache[set_idx][w][1];
+                uint32_t stored_tag = cache[set_idx][w][0];
 
                 if (stored_tag == tag_val && get_valid(metadata) == 1) {
                     // HIT
@@ -367,7 +366,7 @@ void print_contents() const {
                 // 1. Try to find an invalid way
                 for (int w = 0; w < assoc; w++) {
                     if (w >= way_size) break;
-                    int metadata = cache[set_idx][w][1];
+                    uint32_t metadata = cache[set_idx][w][1];
                     if (get_valid(metadata) == 0) {
                         victim_way = w;
                         inserted_invalid = true;
@@ -383,7 +382,7 @@ void print_contents() const {
 
                     for (int w = 0; w < assoc; w++) {
                         if (w >= way_size) break;
-                        int metadata = cache[set_idx][w][1];
+                        uint32_t metadata = cache[set_idx][w][1];
                         if (get_lru(metadata) == assoc - 1 && get_valid(metadata) == 1) {
                             victim_way = w;
 
@@ -404,6 +403,11 @@ void print_contents() const {
                     }
                 }
 
+                // Safety: if no victim found (shouldn't happen), use way 0
+                if (victim_way == -1) {
+                    victim_way = 0;
+                }
+
                 // 3. Fetch from lower level
                 if (victim_way != -1) {
                     addr_out = addr;
@@ -413,20 +417,15 @@ void print_contents() const {
                         // Allocate in victim way
                         cache[set_idx][victim_way][0] = tag_val;
 
-                        int metadata = 0;
+                        uint32_t metadata = 0;
                         metadata = set_blk_offset(metadata, blk_offset);
                         metadata = set_dirty(metadata, 0);
                         metadata = set_valid(metadata, 1);
 
                         cache[set_idx][victim_way][1] = metadata;
 
-                        // 4. Update LRU
-                        if (inserted_invalid) {
-                            lru_insert(set_idx, victim_way);
-                        } else {
-                            int old_lru = get_lru(cache[set_idx][victim_way][1]);
-                            lru_update(old_lru, set_idx);
-                        }
+                        // 4. Update LRU - always use lru_insert for any insertion
+                        lru_insert(set_idx, victim_way);
                     }
                 }
             }
@@ -451,14 +450,14 @@ void print_contents() const {
     }
 
     void cache_write(uint32_t addr, int &resp_out) {
-        int blk_offset = addr & ((1 << blk_offset_bits) - 1);
-        int set_idx = (addr >> blk_offset_bits) & ((1 << index_bits) - 1);
-        int tag_val = (addr >> (blk_offset_bits + index_bits)) & ((1 << tag_bits) - 1);
+        int blk_offset = (blk_offset_bits == 0) ? 0 : (addr & ((1 << blk_offset_bits) - 1));
+        int set_idx = (index_bits == 0) ? 0 : ((addr >> blk_offset_bits) & ((1 << index_bits) - 1));
+        uint32_t tag_val = (addr >> (blk_offset_bits + index_bits)); // full upper bits
         ++writes;
 
         if (assoc == 1) {
-            int metadata = cache[set_idx][0][1];
-            int stored_tag = cache[set_idx][0][0];
+            uint32_t metadata = cache[set_idx][0][1];
+            uint32_t stored_tag = cache[set_idx][0][0];
             if (stored_tag == tag_val && get_valid(metadata) == 1) {
                 metadata = set_dirty(metadata, 1);
                 cache[set_idx][0][1] = metadata;
@@ -486,12 +485,12 @@ void print_contents() const {
                 cache_miss_read(addr_out, resp_out);
                 if (resp_out == 1) {
                     cache[set_idx][0][0] = tag_val;
-                    metadata = 0;
-                    metadata = set_blk_offset(metadata, blk_offset);
-                    metadata = set_lru(metadata, 0);  
-                    metadata = set_dirty(metadata, 1);
-                    metadata = set_valid(metadata, 1);
-                    cache[set_idx][0][1] = metadata;
+                    uint32_t new_metadata = 0;
+                    new_metadata = set_blk_offset(new_metadata, blk_offset);
+                    new_metadata = set_lru(new_metadata, 0);  
+                    new_metadata = set_dirty(new_metadata, 1);
+                    new_metadata = set_valid(new_metadata, 1);
+                    cache[set_idx][0][1] = new_metadata;
                 }
             }
         } else if (assoc > 1) {
@@ -500,8 +499,8 @@ void print_contents() const {
             bool inserted_invalid = false;
 
             for (int w = 0; w < assoc; w++) {
-                int metadata = cache[set_idx][w][1];
-                int stored_tag = cache[set_idx][w][0];
+                uint32_t metadata = cache[set_idx][w][1];
+                uint32_t stored_tag = cache[set_idx][w][0];
                 if (stored_tag == tag_val && get_valid(metadata) == 1) {
                     found = true;
                     int old_lru = get_lru(metadata);
@@ -516,7 +515,7 @@ void print_contents() const {
             if (!found) {
                 ++write_misses;
                 for (int w = 0; w < assoc; w++) {
-                    int metadata = cache[set_idx][w][1];
+                    uint32_t metadata = cache[set_idx][w][1];
                     if (get_valid(metadata) == 0) {
                         victim_way = w;
                         inserted_invalid = true; // ✅ mark insertion into invalid way
@@ -529,7 +528,7 @@ void print_contents() const {
                     uint32_t eblk_addr;
                     lru_order(set_idx, dirty_bit, eblk_addr);
                     for (int w = 0; w < assoc; w++) {
-                        int metadata = cache[set_idx][w][1];
+                        uint32_t metadata = cache[set_idx][w][1];
                         if (get_lru(metadata) == assoc - 1 && get_valid(metadata) == 1) {
                             victim_way = w;
                             if (dirty_bit == 1) {
@@ -548,23 +547,23 @@ void print_contents() const {
                     }
                 }
 
+                // Safety: if no victim found (shouldn't happen), use way 0
+                if (victim_way == -1) {
+                    victim_way = 0;
+                }
+
                 addr_out = addr;
                 cache_miss_read(addr_out, resp_out);
                 if (resp_out == 1 && victim_way != -1) {
                     cache[set_idx][victim_way][0] = tag_val;
-                    int metadata = 0;
+                    uint32_t metadata = 0;
                     metadata = set_blk_offset(metadata, blk_offset);
                     metadata = set_dirty(metadata, 1);
                     metadata = set_valid(metadata, 1);
                     cache[set_idx][victim_way][1] = metadata;
 
-                    // Updated LRU handling
-                    if (inserted_invalid) {
-                        lru_insert(set_idx, victim_way);
-                    } else {
-                        int old_lru = get_lru(cache[set_idx][victim_way][1]);
-                        lru_update(old_lru, set_idx);
-                    }
+                    // Updated LRU handling - always use lru_insert for any insertion
+                    lru_insert(set_idx, victim_way);
                 }
             }
         }
@@ -677,19 +676,15 @@ while (fscanf(fp, " %c %x", &rw, &addr) == 2) {
     printf("e. L1 miss rate:               %.4f\n", l1_miss_rate);
     printf("f. L1 writebacks:              %u\n", L1->writebacks);
     printf("g. L1 prefetches:              %u\n", L1->prefetches);
-
-    if (L2) {
-        printf("h. L2 reads (demand):          %u\n", L2->reads);
-        printf("i. L2 read misses (demand):    %u\n", L2->read_misses);
-        printf("j. L2 reads (prefetch):        %d\n", 0);
-        printf("k. L2 read misses (prefetch):  %d\n", 0);
-        printf("l. L2 writes:                  %u\n", L2->writes);
-        printf("m. L2 write misses:            %u\n", L2->write_misses);
-        printf("n. L2 miss rate:               %.4f\n", l2_miss_rate);
-        printf("o. L2 writebacks:              %u\n", L2->writebacks);
-        printf("p. L2 prefetches:              %u\n", L2->prefetches);
-    }
-
+    printf("h. L2 reads (demand):          %u\n", L2 ? L2->reads : 0);
+    printf("i. L2 read misses (demand):    %u\n", L2 ? L2->read_misses : 0);
+    printf("j. L2 reads (prefetch):        %d\n", 0);
+    printf("k. L2 read misses (prefetch):  %d\n", 0);
+    printf("l. L2 writes:                  %u\n", L2 ? L2->writes : 0);
+    printf("m. L2 write misses:            %u\n", L2 ? L2->write_misses : 0);
+    printf("n. L2 miss rate:               %.4f\n", l2_miss_rate);
+    printf("o. L2 writebacks:              %u\n", L2 ? L2->writebacks : 0);
+    printf("p. L2 prefetches:              %u\n", L2 ? L2->prefetches : 0);
     printf("q. memory traffic:             %u\n", mem_traffic);
 
     delete cache_sys;
