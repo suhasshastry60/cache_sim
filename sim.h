@@ -58,21 +58,21 @@ public:
         tag = 32 - index_bits_local - blk_offset_bits_local;
     }
 
-    int get_valid(uint32_t metadata) const {
+    int calculate_valid(uint32_t metadata) const {
         return metadata & 0x1;
     }
 
-    int get_dirty(uint32_t metadata) const {
+    int calculate_dirty(uint32_t metadata) const {
         return (metadata >> 1) & 0x1;
     }
 
-    int get_lru(uint32_t metadata) const {
+    int calculate_lru(uint32_t metadata) const {
         if (lru_bits == 0) return 0;
         int mask = (1 << lru_bits) - 1;
         return (metadata >> 2) & mask;
     }
 
-    int get_blk_offset(uint32_t metadata) const {
+    int calculate_blk_offset(uint32_t metadata) const {
         int shift = 2 + lru_bits;
         if (blk_offset_bits == 0) return 0;
         int mask = (1 << blk_offset_bits) - 1;
@@ -109,9 +109,9 @@ public:
             if (set < 0 || set >= set_size || way < 0 || way >= way_size) continue;
             uint32_t new_meta = cache[set][way][1];
             uint32_t new_tag = cache[set][way][0];
-            if (get_valid(new_meta) == 1 && get_lru(new_meta) == assoc - 1) {
-                dirty = get_dirty(new_meta);
-                int blk_offset = get_blk_offset(new_meta);
+            if (calculate_valid(new_meta) == 1 && calculate_lru(new_meta) == assoc - 1) {
+                dirty = calculate_dirty(new_meta);
+                int blk_offset = calculate_blk_offset(new_meta);
 
                 eblk_addr = (new_tag << (index_bits + blk_offset_bits)) |
                             (set << blk_offset_bits) |
@@ -127,7 +127,7 @@ public:
         for (int way = 0; way < assoc; way++) {
             if (set < 0 || set >= set_size || way < 0 || way >= way_size) continue;
             uint32_t new_meta = cache[set][way][1];
-            int current_lru = get_lru(new_meta);
+            int current_lru = calculate_lru(new_meta);
 
             if (current_lru == hit_value) {
                 new_meta = set_lru(new_meta, 0);
@@ -145,9 +145,9 @@ public:
             if (w == new_way) continue;
             uint32_t meta = cache[set][w][1];
 
-            if (get_valid(meta) == 0) continue;
+            if (calculate_valid(meta) == 0) continue;
 
-            int curr_lru = get_lru(meta);
+            int curr_lru = calculate_lru(meta);
             meta = set_lru(meta, curr_lru + 1);
             cache[set][w][1] = meta;
         }
@@ -166,9 +166,9 @@ public:
                 for (int lru_val = 0; lru_val < assoc; ++lru_val) {
                     bool found = false;
                     for (int w = 0; w < assoc; ++w) {
-                        if (get_valid(cache[s][w][1]) && get_lru(cache[s][w][1]) == lru_val) {
+                        if (calculate_valid(cache[s][w][1]) && calculate_lru(cache[s][w][1]) == lru_val) {
                             cout << "   " << setw(6) << hex << cache[s][w][0];
-                            if (get_dirty(cache[s][w][1]))
+                            if (calculate_dirty(cache[s][w][1]))
                                 cout << " D";
                             else
                                 cout << "  ";
@@ -181,9 +181,9 @@ public:
                     }
                 }
             } else {
-                if (get_valid(cache[s][0][1])) {
+                if (calculate_valid(cache[s][0][1])) {
                     cout << "   " << setw(6) << hex << cache[s][0][0];
-                    if (get_dirty(cache[s][0][1]))
+                    if (calculate_dirty(cache[s][0][1]))
                         cout << " D";
                     else
                         cout << "  ";
@@ -228,14 +228,14 @@ public:
             uint32_t metadata = cache[set_idx][0][1];
             uint32_t stored_tag = cache[set_idx][0][0];
 
-            if (stored_tag == tag_val && get_valid(metadata) == 1) {
+            if (stored_tag == tag_val && calculate_valid(metadata) == 1) {
                 cache_hit_read(tag_val, resp_out);
             } else {
                 ++read_misses;
-                if (get_valid(metadata) == 1 && stored_tag != tag_val) {
-                    if (get_dirty(metadata) == 1) {
+                if (calculate_valid(metadata) == 1 && stored_tag != tag_val) {
+                    if (calculate_dirty(metadata) == 1) {
                         ++writebacks;
-                        int blk_offset_evict = get_blk_offset(metadata);
+                        int blk_offset_evict = calculate_blk_offset(metadata);
                         uint32_t eblk_addr = (stored_tag << (index_bits + blk_offset_bits)) |
                                              (set_idx << blk_offset_bits) |
                                              blk_offset_evict;
@@ -274,11 +274,11 @@ public:
                 uint32_t metadata = cache[set_idx][w][1];
                 uint32_t stored_tag = cache[set_idx][w][0];
 
-                if (stored_tag == tag_val && get_valid(metadata) == 1) {
+                if (stored_tag == tag_val && calculate_valid(metadata) == 1) {
                     found = true;
                     cache_hit_read(tag_val, resp_out);
 
-                    int old_lru = get_lru(metadata);
+                    int old_lru = calculate_lru(metadata);
                     lru_update(old_lru, set_idx);
                     break;
                 }
@@ -291,7 +291,7 @@ public:
                 for (int w = 0; w < assoc; w++) {
                     if (w >= way_size) break;
                     uint32_t metadata = cache[set_idx][w][1];
-                    if (get_valid(metadata) == 0) {
+                    if (calculate_valid(metadata) == 0) {
                         victim_way = w;
                         break;
                     }
@@ -305,7 +305,7 @@ public:
                     for (int w = 0; w < assoc; w++) {
                         if (w >= way_size) break;
                         uint32_t metadata = cache[set_idx][w][1];
-                        if (get_lru(metadata) == assoc - 1 && get_valid(metadata) == 1) {
+                        if (calculate_lru(metadata) == assoc - 1 && calculate_valid(metadata) == 1) {
                             victim_way = w;
 
                             if (dirty_bit == 1) {
@@ -358,16 +358,16 @@ public:
         if (assoc == 1) {
             uint32_t metadata = cache[set_idx][0][1];
             uint32_t stored_tag = cache[set_idx][0][0];
-            if (stored_tag == tag_val && get_valid(metadata) == 1) {
+            if (stored_tag == tag_val && calculate_valid(metadata) == 1) {
                 metadata = set_dirty(metadata, 1);
                 cache[set_idx][0][1] = metadata;
                 resp_out = 1;
             } else {
                 ++write_misses;
-                if (get_valid(metadata) == 1 && stored_tag != tag_val) {
-                    if (get_dirty(metadata) == 1) {
+                if (calculate_valid(metadata) == 1 && stored_tag != tag_val) {
+                    if (calculate_dirty(metadata) == 1) {
                         ++writebacks;
-                        int blk_offset_evict = get_blk_offset(metadata);
+                        int blk_offset_evict = calculate_blk_offset(metadata);
                         uint32_t eblk_addr = (stored_tag << (index_bits + blk_offset_bits)) | 
                                             (set_idx << blk_offset_bits) | 
                                             blk_offset_evict;
@@ -400,9 +400,9 @@ public:
             for (int w = 0; w < assoc; w++) {
                 uint32_t metadata = cache[set_idx][w][1];
                 uint32_t stored_tag = cache[set_idx][w][0];
-                if (stored_tag == tag_val && get_valid(metadata) == 1) {
+                if (stored_tag == tag_val && calculate_valid(metadata) == 1) {
                     found = true;
-                    int old_lru = get_lru(metadata);
+                    int old_lru = calculate_lru(metadata);
                     metadata = set_dirty(metadata, 1);
                     cache[set_idx][w][1] = metadata;
                     resp_out = 1;
@@ -415,7 +415,7 @@ public:
                 ++write_misses;
                 for (int w = 0; w < assoc; w++) {
                     uint32_t metadata = cache[set_idx][w][1];
-                    if (get_valid(metadata) == 0) {
+                    if (calculate_valid(metadata) == 0) {
                         victim_way = w;
                         break;
                     }
@@ -427,7 +427,7 @@ public:
                     lru_order(set_idx, dirty_bit, eblk_addr);
                     for (int w = 0; w < assoc; w++) {
                         uint32_t metadata = cache[set_idx][w][1];
-                        if (get_lru(metadata) == assoc - 1 && get_valid(metadata) == 1) {
+                        if (calculate_lru(metadata) == assoc - 1 && calculate_valid(metadata) == 1) {
                             victim_way = w;
                             if (dirty_bit == 1) {
                                 ++writebacks;
@@ -463,30 +463,6 @@ public:
                 }
             }
         }
-    }
-};
-
-class cache_interface {
-public:
-    cache_wrapper* L1;
-    cache_wrapper* L2;
-
-    cache_interface(cache_params_t params) {
-        if (params.L2_SIZE > 0) {
-            L2 = new cache_wrapper(params.L2_SIZE, params.L2_ASSOC, params.BLOCKSIZE,
-                                   0, 0, 0, 0, 2, 'r', nullptr);
-            L1 = new cache_wrapper(params.L1_SIZE, params.L1_ASSOC, params.BLOCKSIZE,
-                                   0, 0, 0, 0, 1, 'r', L2);
-        } else {
-            L2 = nullptr;
-            L1 = new cache_wrapper(params.L1_SIZE, params.L1_ASSOC, params.BLOCKSIZE,
-                                   0, 0, 0, 0, 1, 'r', nullptr);
-        }
-    }
-
-    ~cache_interface() {
-        delete L1;
-        if (L2 != nullptr) delete L2;
     }
 };
 

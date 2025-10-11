@@ -16,44 +16,68 @@
 */
 
 cache_wrapper::cache_wrapper(int size, int assoc, int blk_size, uint32_t addr_in,
-              int tag_out, int addr_out, int resp_in, int cache_num,
+                  int tag_out, int addr_out, int resp_in, int cache_num,
               char operation, cache_wrapper* next) {
-    this->size = size;
-    this->assoc = assoc;
-    this->blk_size = blk_size;
-    this->addr_in = addr_in;
-    this->tag_out = tag_out;
-    this->addr_out = addr_out;
-    this->resp_in = resp_in;
-    this->cache_num = cache_num;
-    this->operation = operation;
-    this->resp_out = 0;
+        this->size = size;
+        this->assoc = assoc;
+        this->blk_size = blk_size;
+        this->addr_in = addr_in;
+        this->tag_out = tag_out;
+        this->addr_out = addr_out;
+        this->resp_in = resp_in;
+        this->cache_num = cache_num;
+        this->operation = operation;
+        this->resp_out = 0;
     this->next_cache = next;
 
-    tag_bits = 0;
-    index_bits = 0;
-    blk_offset_bits = 0;
+        tag_bits = 0;
+        index_bits = 0;
+        blk_offset_bits = 0;
 
-    decode_addr(addr_in, tag_bits, index_bits, blk_offset_bits);
+        decode_addr(addr_in, tag_bits, index_bits, blk_offset_bits);
 
     lru_bits = (assoc > 1) ? (int)ceil(log2((double)assoc)) : 0;
-    metadata_width = 2 + lru_bits + blk_offset_bits;
+        metadata_width = 2 + lru_bits + blk_offset_bits;
 
-    if (index_bits < 0 || index_bits > 30) {
-        cerr << "Error: index_bits out of range: " << index_bits << endl;
-        exit(EXIT_FAILURE);
-    }
+        if (index_bits < 0 || index_bits > 30) {
+            cerr << "Error: index_bits out of range: " << index_bits << endl;
+            exit(EXIT_FAILURE);
+        }
 
-    set_size = (index_bits == 0) ? 1 : (1 << index_bits);
-    way_size = (assoc == 1) ? 1 : assoc;
+        set_size = (index_bits == 0) ? 1 : (1 << index_bits);
+        way_size = (assoc == 1) ? 1 : assoc;
 
-    if (set_size <= 0 || way_size <= 0) {
-        cerr << "Error: invalid set_size/way_size computed\n";
-        exit(EXIT_FAILURE);
-    }
+        if (set_size <= 0 || way_size <= 0) {
+            cerr << "Error: invalid set_size/way_size computed\n";
+            exit(EXIT_FAILURE);
+        }
 
-    cache.resize(set_size, vector<vector<uint32_t>>(way_size, vector<uint32_t>(2, 0)));
+        cache.resize(set_size, vector<vector<uint32_t>>(way_size, vector<uint32_t>(2, 0)));
 }
+
+class cache_interface {
+public:
+    cache_wrapper* L1;
+    cache_wrapper* L2;
+
+    cache_interface(cache_params_t params) {
+        if (params.L2_SIZE > 0) {
+            L2 = new cache_wrapper(params.L2_SIZE, params.L2_ASSOC, params.BLOCKSIZE,
+                                   0, 0, 0, 0, 2, 'r', nullptr);
+            L1 = new cache_wrapper(params.L1_SIZE, params.L1_ASSOC, params.BLOCKSIZE,
+                                   0, 0, 0, 0, 1, 'r', L2);
+        } else {
+            L2 = nullptr;
+            L1 = new cache_wrapper(params.L1_SIZE, params.L1_ASSOC, params.BLOCKSIZE,
+                                   0, 0, 0, 0, 1, 'r', nullptr);
+        }
+    }
+
+    ~cache_interface() {
+        delete L1;
+        if (L2 != nullptr) delete L2;
+    }
+};
 
 int main(int argc, char *argv[]) {
     FILE *fp;
