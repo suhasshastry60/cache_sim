@@ -17,7 +17,7 @@
 
 cache_wrapper::cache_wrapper(int size, int assoc, int blk_size, uint32_t addr_in,
                   int tag_out, int addr_out, int resp_in, int cache_num,
-              char operation, cache_wrapper* next) {
+              char operation, int pref_n, int pref_m, cache_wrapper* next) {
         this->size = size;
         this->assoc = assoc;
         this->blk_size = blk_size;
@@ -29,6 +29,8 @@ cache_wrapper::cache_wrapper(int size, int assoc, int blk_size, uint32_t addr_in
         this->operation = operation;
         this->resp_out = 0;
     this->next_cache = next;
+    this->PREF_N = pref_n;
+    this->PREF_M = pref_m;
 
         tag_bits = 0;
         index_bits = 0;
@@ -53,6 +55,16 @@ cache_wrapper::cache_wrapper(int size, int assoc, int blk_size, uint32_t addr_in
         }
 
         cache.resize(set_size, vector<vector<uint32_t>>(way_size, vector<uint32_t>(2, 0)));
+
+    // Initialize stream buffer if prefetcher is enabled
+    if (PREF_N > 0 && PREF_M > 0) {
+        stream_buffer.resize(PREF_N, vector<uint32_t>(PREF_M, UINT32_MAX));
+        sb_params.resize(PREF_N);
+        for (int i = 0; i < PREF_N; i++) {
+            sb_params[i].valid = 0;
+            sb_params[i].lru = 0;
+        }
+    }
 }
 
 class cache_interface {
@@ -61,15 +73,16 @@ public:
     cache_wrapper* L2;
 
     cache_interface(cache_params_t params) {
-        if (params.L2_SIZE > 0) {
+        //fyi, if there is L2, prefetcher is in L2 and fetches it from memory, else add a prefetcher in L1 and fetch it from memory
+        if (params.L2_SIZE > 0) { //also instantiate the prefetcher in L2
             L2 = new cache_wrapper(params.L2_SIZE, params.L2_ASSOC, params.BLOCKSIZE,
-                                   0, 0, 0, 0, 2, 'r', nullptr);
+                                   0, 0, 0, 0, 2, 'r', params.PREF_N, params.PREF_M, nullptr);
             L1 = new cache_wrapper(params.L1_SIZE, params.L1_ASSOC, params.BLOCKSIZE,
-                                   0, 0, 0, 0, 1, 'r', L2);
+                                   0, 0, 0, 0, 1, 'r', 0, 0, L2);
         } else {
-            L2 = nullptr;
+            L2 = nullptr; //instantiate prefetcher in L1
             L1 = new cache_wrapper(params.L1_SIZE, params.L1_ASSOC, params.BLOCKSIZE,
-                                   0, 0, 0, 0, 1, 'r', nullptr);
+                                   0, 0, 0, 0, 1, 'r', params.PREF_N, params.PREF_M, nullptr);
         }
     }
 
@@ -138,6 +151,13 @@ while (fscanf(fp, " %c %x", &rw, &addr) == 2) {
     if (cache_sys->L2 != nullptr) {
         cache_sys->L2->print_contents();
     }
+    
+    // Print stream buffer contents (from the cache that has the prefetcher)
+    if (cache_sys->L2 != nullptr) {
+        cache_sys->L2->print_stream_buffers();
+    } else {
+        cache_sys->L1->print_stream_buffers();
+    }
 
     cout << "\n===== Measurements =====\n";
     auto L1 = cache_sys->L1;
@@ -150,8 +170,8 @@ while (fscanf(fp, " %c %x", &rw, &addr) == 2) {
         static_cast<double>(L2->read_misses) / L2->reads : 0.0;
 
     uint32_t mem_traffic = (L2) ?
-        L2->read_misses + L2->write_misses + L2->writebacks :
-        L1->read_misses + L1->write_misses + L1->writebacks;
+        L2->read_misses + L2->write_misses + L2->writebacks + L2->prefetches :
+        L1->read_misses + L1->write_misses + L1->writebacks + L1->prefetches;
 
     printf("a. L1 reads:                   %u\n", L1->reads);
     printf("b. L1 read misses:             %u\n", L1->read_misses);

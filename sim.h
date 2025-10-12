@@ -11,6 +11,12 @@ using namespace std;
 
 typedef 
 struct {
+   uint32_t valid;
+   uint32_t lru;
+} stream_buffer_params_t;
+
+typedef 
+struct {
    uint32_t BLOCKSIZE;
    uint32_t L1_SIZE;
    uint32_t L1_ASSOC;
@@ -41,9 +47,14 @@ public:
     uint32_t writebacks = 0;
     uint32_t prefetches = 0;
 
+    // Stream buffer prefetcher
+    int PREF_N, PREF_M;
+    vector<vector<uint32_t>> stream_buffer;  // [PREF_N][PREF_M] storing tags
+    vector<stream_buffer_params_t> sb_params;  // [PREF_N] for metadata
+
     cache_wrapper(int size, int assoc, int blk_size, uint32_t addr_in,
                   int tag_out, int addr_out, int resp_in, int cache_num,
-                  char operation, cache_wrapper* next = nullptr);
+                  char operation, int pref_n, int pref_m, cache_wrapper* next = nullptr);
 
     void decode_addr(uint32_t addr_in_local, int &tag, int &index_bits_local, int &blk_offset_bits_local) {
         if (addr_in_local > ((1ULL << 32) - 1ULL)) {
@@ -196,6 +207,29 @@ public:
         cout << dec;
     }
 
+    void print_stream_buffers() const {
+        if (PREF_N <= 0 || PREF_M <= 0) {
+            return;  // No stream buffers to print
+        }
+        
+        cout << "\n===== Stream Buffer(s) contents =====\n";
+        // Print in MRU to LRU order (lru value 0 to N-1)
+        for (uint32_t lru_val = 0; lru_val < (uint32_t)PREF_N; lru_val++) {
+            for (int i = 0; i < PREF_N; i++) {
+                if (sb_params[i].valid == 1 && sb_params[i].lru == lru_val) {
+                    for (int j = 0; j < PREF_M; j++) {
+                        if (stream_buffer[i][j] != UINT32_MAX) {
+                            cout << " " << setw(7) << hex << stream_buffer[i][j];
+                        }
+                    }
+                    cout << " \n";
+                    break;
+                }
+            }
+        }
+        cout << dec;
+    }
+
     void cache_hit_read(int hit_tag, int &resp_out) {
         resp_out = 1;
         tag_out = hit_tag;
@@ -208,6 +242,135 @@ public:
         } else {
             resp_out = 1;
         }
+    }
+
+    // Helper function to extract tag from address
+    uint32_t generate_tag(uint32_t addr) {
+        return (addr >> (blk_offset_bits + index_bits));
+    }
+
+    // Helper function to get block address (tag + index, without offset)
+    uint32_t get_block_addr(uint32_t addr) {
+        return (addr >> blk_offset_bits);
+    }
+
+
+    // Rearrange stream buffer after hit at hit_index (remove 0 to hit_index, shift rest left)
+    void buffer_rearrange(int hit_buffer, int hit_index) {
+        // Shift everything from hit_index+1 onwards to position 0
+        int shift_amount = hit_index + 1;
+        for (int j = 0; j < PREF_M - shift_amount; j++) {
+            stream_buffer[hit_buffer][j] = stream_buffer[hit_buffer][j + shift_amount];
+        }
+        // Clear the remaining positions at the end
+        for (int j = PREF_M - shift_amount; j < PREF_M; j++) {
+            stream_buffer[hit_buffer][j] = UINT32_MAX;
+        }
+    }
+
+    // Refill stream buffer from the end with next sequential blocks
+    // base_addr is the address corresponding to the first entry (index 0) in the buffer AFTER rearrangement
+    // Always refill to maintain M blocks total
+    void buffer_refill(int hit_buffer, uint32_t base_addr) {
+        // Count valid entries to determine how many to refill
+        int valid_count = 0;
+        for (int j = 0; j < PREF_M; j++) {
+            if (stream_buffer[hit_buffer][j] != UINT32_MAX) {
+                valid_count++;
+            } else {
+                break;  // Empty slots are at the end after rearrangement
+            }
+        }
+        
+        // If buffer is already full, nothing to refill
+        if (valid_count >= PREF_M) {
+            return;
+        }
+
+        // Calculate starting address for new blocks
+        // The last valid block is at position (valid_count-1), which is base_addr + (valid_count-1) * blk_size
+        // So the next block is at base_addr + valid_count * blk_size
+        uint32_t next_addr = base_addr + (valid_count * blk_size);
+
+        // Prefetch blocks to fill buffer to M blocks
+        for (int j = valid_count; j < PREF_M; j++) {
+            stream_buffer[hit_buffer][j] = get_block_addr(next_addr);
+            prefetches++;
+            next_addr += blk_size;
+        }
+    }
+
+    // Update LRU for stream buffers (set hit_buffer to MRU)
+    void sb_lru_update(int hit_buffer, bool was_invalid = false) {
+        if (was_invalid) {
+            // New allocation: increment all other valid buffers
+            for (int i = 0; i < PREF_N; i++) {
+                if (i != hit_buffer && sb_params[i].valid == 1) {
+                    sb_params[i].lru++;
+                }
+            }
+        } else {
+            // Existing buffer accessed: only increment those that were more recent
+            uint32_t old_lru = sb_params[hit_buffer].lru;
+            for (int i = 0; i < PREF_N; i++) {
+                if (i != hit_buffer && sb_params[i].valid == 1) {
+                    if (sb_params[i].lru < old_lru) {
+                        sb_params[i].lru++;
+                    }
+                }
+            }
+        }
+        
+        // Set hit_buffer to MRU
+        sb_params[hit_buffer].lru = 0;
+    }
+
+    // Find victim stream buffer (invalid or LRU)
+    int find_sb_victim() {
+        // First, look for invalid entry
+        for (int i = 0; i < PREF_N; i++) {
+            if (sb_params[i].valid == 0) {
+                return i;
+            }
+        }
+        
+        // Otherwise, find LRU entry
+        for (int i = 0; i < PREF_N; i++) {
+            if (sb_params[i].lru == (uint32_t)(PREF_N - 1)) {
+                return i;
+            }
+        }
+        
+        return 0;  // Fallback
+    }
+
+    // Search for SB hit in MRU-first order (per section 4.3)
+    // When multiple buffers hit, update only the MRU to avoid redundant prefetches
+    bool find_sb_hit(uint32_t block_addr, int &hit_buffer, int &hit_index) {
+        hit_buffer = -1;
+        hit_index = -1;
+        
+        if (PREF_N <= 0 || PREF_M <= 0) {
+            return false;
+        }
+        
+        // Search in MRU-first order (lru=0, then lru=1, etc.)
+        for (uint32_t lru_val = 0; lru_val < (uint32_t)PREF_N; lru_val++) {
+            for (int i = 0; i < PREF_N; i++) {
+                if (sb_params[i].valid == 1 && sb_params[i].lru == lru_val) {
+                    for (int j = 0; j < PREF_M; j++) {
+                        if (stream_buffer[i][j] != UINT32_MAX && stream_buffer[i][j] == block_addr) {
+                            hit_buffer = i;
+                            hit_index = j;
+                            return true;
+                        }
+                    }
+                    break;  // Only one buffer per lru_val
+                }
+            }
+        }
+        
+        return false;
     }
 
     void cache_read(uint32_t addr, int &resp_out) {
@@ -227,65 +390,192 @@ public:
         if (assoc == 1) {
             uint32_t metadata = cache[set_idx][0][1];
             uint32_t stored_tag = cache[set_idx][0][0];
+            bool cache_hit = (stored_tag == tag_val && calculate_valid(metadata) == 1);
 
-            if (stored_tag == tag_val && calculate_valid(metadata) == 1) {
+            if (cache_hit) {
+                // Cache HIT → Service from cache
                 cache_hit_read(tag_val, resp_out);
+                
+                // But also check stream buffer for Scenario 4 (Cache HIT + SB HIT)
+                int hit_buffer = -1;
+                int hit_index = -1;
+                bool sb_hit = find_sb_hit(get_block_addr(addr), hit_buffer, hit_index);
+                
+                if (sb_hit) {
+                    // Scenario 4: Cache HIT + SB HIT → Continue prefetch stream
+                    buffer_rearrange(hit_buffer, hit_index);
+                    uint32_t prefetch_addr = addr + (PREF_M - hit_index) * blk_size;
+                    for (int pf = 0; pf < (hit_index + 1); pf++) {
+                        stream_buffer[hit_buffer][pf + (PREF_M - hit_index - 1)] = get_block_addr(prefetch_addr);
+                        prefetches++;
+                        prefetch_addr += blk_size;
+                    }
+                    sb_lru_update(hit_buffer);
+                }
             } else {
-                ++read_misses;
-                if (calculate_valid(metadata) == 1 && stored_tag != tag_val) {
-                    if (calculate_dirty(metadata) == 1) {
-                        ++writebacks;
-                        int blk_offset_evict = calculate_blk_offset(metadata);
-                        uint32_t eblk_addr = (stored_tag << (index_bits + blk_offset_bits)) |
-                                             (set_idx << blk_offset_bits) |
-                                             blk_offset_evict;
+                // Cache MISS → Check stream buffer (MRU-first search)
+                int hit_buffer = -1;
+                int hit_index = -1;
+                bool sb_hit = find_sb_hit(get_block_addr(addr), hit_buffer, hit_index);
+                
+                // Increment read_misses only if both cache AND SB miss
+                if (!sb_hit) {
+                    ++read_misses;
+                }
 
-                        int write_resp;
-                        if (next_cache != nullptr) {
-                            next_cache->cache_write(eblk_addr, write_resp);
-                            if (write_resp != 1) {
-                                cerr << "Error: Write-back to lower level failed." << endl;
-                                exit(EXIT_FAILURE);
+                if (sb_hit) {
+                    // Scenario 2: Cache MISS + SB HIT → Allocate in cache from SB, update SB
+                    
+                    // Handle eviction if needed
+                    if (calculate_valid(metadata) == 1 && stored_tag != tag_val) {
+                        if (calculate_dirty(metadata) == 1) {
+                            ++writebacks;
+                            int blk_offset_evict = calculate_blk_offset(metadata);
+                            uint32_t eblk_addr = (stored_tag << (index_bits + blk_offset_bits)) |
+                                                 (set_idx << blk_offset_bits) |
+                                                 blk_offset_evict;
+                            int write_resp;
+                            if (next_cache != nullptr) {
+                                next_cache->cache_write(eblk_addr, write_resp);
+                                if (write_resp != 1) {
+                                    cerr << "Error: Write-back to lower level failed." << endl;
+                                    exit(EXIT_FAILURE);
+                                }
                             }
                         }
                     }
-                }
-
-                addr_out = addr;
-                cache_miss_read(addr_out, resp_out);
-
-                if (resp_out == 1) {
+                    
+                    // Allocate in cache (copy from SB conceptually, but we just set metadata)
+                    resp_out = 1;
                     cache[set_idx][0][0] = tag_val;
-
                     uint32_t new_metadata = 0;
                     new_metadata = set_blk_offset(new_metadata, blk_offset);
                     new_metadata = set_lru(new_metadata, 0);
                     new_metadata = set_dirty(new_metadata, 0);
                     new_metadata = set_valid(new_metadata, 1);
-
                     cache[set_idx][0][1] = new_metadata;
+                    
+                    // Update stream buffer: rearrange and prefetch (hit_index + 1) blocks
+                    buffer_rearrange(hit_buffer, hit_index);
+                    uint32_t prefetch_addr = addr + (PREF_M - hit_index) * blk_size;
+                    for (int pf = 0; pf < (hit_index + 1); pf++) {
+                        stream_buffer[hit_buffer][pf + (PREF_M - hit_index - 1)] = get_block_addr(prefetch_addr);
+                        prefetches++;
+                        prefetch_addr += blk_size;
+                    }
+                    sb_lru_update(hit_buffer);
+                    
+                } else {
+                    // Scenario 1: Cache MISS + SB MISS → Fetch from memory, allocate SB with M blocks
+                    
+                    // Handle eviction if needed
+                    if (calculate_valid(metadata) == 1 && stored_tag != tag_val) {
+                        if (calculate_dirty(metadata) == 1) {
+                            ++writebacks;
+                            int blk_offset_evict = calculate_blk_offset(metadata);
+                            uint32_t eblk_addr = (stored_tag << (index_bits + blk_offset_bits)) |
+                                                 (set_idx << blk_offset_bits) |
+                                                 blk_offset_evict;
+                            int write_resp;
+                            if (next_cache != nullptr) {
+                                next_cache->cache_write(eblk_addr, write_resp);
+                                if (write_resp != 1) {
+                                    cerr << "Error: Write-back to lower level failed." << endl;
+                                    exit(EXIT_FAILURE);
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Fetch from memory
+                    addr_out = addr;
+                    cache_miss_read(addr_out, resp_out);
+
+                    if (resp_out == 1) {
+                        cache[set_idx][0][0] = tag_val;
+                        uint32_t new_metadata = 0;
+                        new_metadata = set_blk_offset(new_metadata, blk_offset);
+                        new_metadata = set_lru(new_metadata, 0);
+                        new_metadata = set_dirty(new_metadata, 0);
+                        new_metadata = set_valid(new_metadata, 1);
+                        cache[set_idx][0][1] = new_metadata;
+                        
+                        // Allocate stream buffer and prefetch M blocks
+                        if (PREF_N > 0 && PREF_M > 0) {
+                            int victim_sb = find_sb_victim();
+                            bool was_invalid = (sb_params[victim_sb].valid == 0);
+                            sb_params[victim_sb].valid = 1;
+                            
+                            // Clear old contents
+                            for (int j = 0; j < PREF_M; j++) {
+                                stream_buffer[victim_sb][j] = UINT32_MAX;
+                            }
+                            
+                            // Prefetch M blocks: addr+1, addr+2, ..., addr+M
+                            uint32_t prefetch_addr = addr;
+                            for (int j = 0; j < PREF_M; j++) {
+                                prefetch_addr += blk_size;
+                                stream_buffer[victim_sb][j] = get_block_addr(prefetch_addr);
+                                prefetches++;
+                            }
+                            
+                            sb_lru_update(victim_sb, was_invalid);
+                        }
+                    }
                 }
             }
         } else if (assoc > 1) {
-            bool found = false;
-
+            // Check cache first
+            bool cache_hit = false;
+            int hit_way = -1;
+            
             for (int w = 0; w < assoc; w++) {
                 if (w >= way_size) break;
                 uint32_t metadata = cache[set_idx][w][1];
                 uint32_t stored_tag = cache[set_idx][w][0];
 
                 if (stored_tag == tag_val && calculate_valid(metadata) == 1) {
-                    found = true;
-                    cache_hit_read(tag_val, resp_out);
-
-                    int old_lru = calculate_lru(metadata);
-                    lru_update(old_lru, set_idx);
+                    cache_hit = true;
+                    hit_way = w;
                     break;
                 }
             }
 
-            if (!found) {
-                ++read_misses;
+            if (cache_hit) {
+                // Cache HIT → Service from cache
+                cache_hit_read(tag_val, resp_out);
+                uint32_t metadata = cache[set_idx][hit_way][1];
+                int old_lru = calculate_lru(metadata);
+                lru_update(old_lru, set_idx);
+                
+                // But also check stream buffer for Scenario 4 (Cache HIT + SB HIT)
+                int hit_buffer = -1;
+                int hit_index = -1;
+                bool sb_hit = find_sb_hit(get_block_addr(addr), hit_buffer, hit_index);
+                
+                if (sb_hit) {
+                    // Scenario 4: Cache HIT + SB HIT → Continue prefetch stream
+                    buffer_rearrange(hit_buffer, hit_index);
+                    uint32_t prefetch_addr = addr + (PREF_M - hit_index) * blk_size;
+                    for (int pf = 0; pf < (hit_index + 1); pf++) {
+                        stream_buffer[hit_buffer][pf + (PREF_M - hit_index - 1)] = get_block_addr(prefetch_addr);
+                        prefetches++;
+                        prefetch_addr += blk_size;
+                    }
+                    sb_lru_update(hit_buffer);
+                }
+            } else {
+                // Cache MISS → Check stream buffer (MRU-first search)
+                int hit_buffer = -1;
+                int hit_index = -1;
+                bool sb_hit = find_sb_hit(get_block_addr(addr), hit_buffer, hit_index);
+                
+                // Increment read_misses only if both cache AND SB miss
+                if (!sb_hit) {
+                    ++read_misses;
+                }
+                
+                // Find victim way
                 int victim_way = -1;
 
                 for (int w = 0; w < assoc; w++) {
@@ -329,20 +619,67 @@ public:
                 }
 
                 if (victim_way != -1) {
-                    addr_out = addr;
-                    cache_miss_read(addr_out, resp_out);
-
-                    if (resp_out == 1) {
+                    if (sb_hit) {
+                        // Scenario 2: Cache MISS + SB HIT
+                        resp_out = 1;  // Data available from stream buffer
+                        
                         cache[set_idx][victim_way][0] = tag_val;
-
                         uint32_t metadata = 0;
                         metadata = set_blk_offset(metadata, blk_offset);
                         metadata = set_dirty(metadata, 0);
                         metadata = set_valid(metadata, 1);
-
                         cache[set_idx][victim_way][1] = metadata;
-
+                        
                         lru_insert(set_idx, victim_way);
+                        
+                        // Update stream buffer: rearrange and prefetch (hit_index + 1) blocks
+                        buffer_rearrange(hit_buffer, hit_index);
+                        uint32_t prefetch_addr = addr + (PREF_M - hit_index) * blk_size;
+                        for (int pf = 0; pf < (hit_index + 1); pf++) {
+                            stream_buffer[hit_buffer][pf + (PREF_M - hit_index - 1)] = get_block_addr(prefetch_addr);
+                            prefetches++;
+                            prefetch_addr += blk_size;
+                        }
+                        sb_lru_update(hit_buffer);
+                    } else {
+                        // Scenario 1: Cache MISS + SB MISS
+                        addr_out = addr;
+                        cache_miss_read(addr_out, resp_out);
+
+                        if (resp_out == 1) {
+                            cache[set_idx][victim_way][0] = tag_val;
+
+                            uint32_t metadata = 0;
+                            metadata = set_blk_offset(metadata, blk_offset);
+                            metadata = set_dirty(metadata, 0);
+                            metadata = set_valid(metadata, 1);
+
+                            cache[set_idx][victim_way][1] = metadata;
+
+                            lru_insert(set_idx, victim_way);
+                            
+                            // Allocate stream buffer and prefetch M blocks
+                            if (PREF_N > 0 && PREF_M > 0) {
+                                int victim_sb = find_sb_victim();
+                                bool was_invalid = (sb_params[victim_sb].valid == 0);
+                                sb_params[victim_sb].valid = 1;
+                                
+                                // Clear old contents
+                                for (int j = 0; j < PREF_M; j++) {
+                                    stream_buffer[victim_sb][j] = 0;
+                                }
+                                
+                                // Prefetch M blocks: addr+1, addr+2, ..., addr+M
+                                uint32_t prefetch_addr = addr;
+                                for (int j = 0; j < PREF_M; j++) {
+                                    prefetch_addr += blk_size;
+                                    stream_buffer[victim_sb][j] = get_block_addr(prefetch_addr);
+                                    prefetches++;
+                                }
+                                
+                                sb_lru_update(victim_sb, was_invalid);
+                            }
+                        }
                     }
                 }
             }
@@ -354,65 +691,199 @@ public:
         int set_idx = (index_bits == 0) ? 0 : ((addr >> blk_offset_bits) & ((1 << index_bits) - 1));
         uint32_t tag_val = (addr >> (blk_offset_bits + index_bits));
         ++writes;
-
+        
         if (assoc == 1) {
             uint32_t metadata = cache[set_idx][0][1];
             uint32_t stored_tag = cache[set_idx][0][0];
-            if (stored_tag == tag_val && calculate_valid(metadata) == 1) {
+            bool cache_hit = (stored_tag == tag_val && calculate_valid(metadata) == 1);
+            
+            if (cache_hit) {
+                // Cache HIT → Mark dirty
                 metadata = set_dirty(metadata, 1);
                 cache[set_idx][0][1] = metadata;
                 resp_out = 1;
+                
+                // But also check stream buffer for Scenario 4 (Cache HIT + SB HIT)
+                int hit_buffer = -1;
+                int hit_index = -1;
+                bool sb_hit = find_sb_hit(get_block_addr(addr), hit_buffer, hit_index);
+                
+                if (sb_hit) {
+                    // Scenario 4: Cache HIT + SB HIT → Continue prefetch stream
+                    buffer_rearrange(hit_buffer, hit_index);
+                    uint32_t prefetch_addr = addr + (PREF_M - hit_index) * blk_size;
+                    for (int pf = 0; pf < (hit_index + 1); pf++) {
+                        stream_buffer[hit_buffer][pf + (PREF_M - hit_index - 1)] = get_block_addr(prefetch_addr);
+                        prefetches++;
+                        prefetch_addr += blk_size;
+                    }
+                    sb_lru_update(hit_buffer);
+                }
             } else {
-                ++write_misses;
-                if (calculate_valid(metadata) == 1 && stored_tag != tag_val) {
-                    if (calculate_dirty(metadata) == 1) {
-                        ++writebacks;
-                        int blk_offset_evict = calculate_blk_offset(metadata);
-                        uint32_t eblk_addr = (stored_tag << (index_bits + blk_offset_bits)) | 
-                                            (set_idx << blk_offset_bits) | 
-                                            blk_offset_evict;
-                        int write_resp;
-                        if (next_cache != nullptr) {
-                            next_cache->cache_write(eblk_addr, write_resp);
-                            if (write_resp != 1) {
-                                cerr << "Error: Write-back to lower level failed." << endl;
-                                exit(EXIT_FAILURE);
+                // Cache MISS → Check stream buffer (MRU-first search)
+                int hit_buffer = -1;
+                int hit_index = -1;
+                bool sb_hit = find_sb_hit(get_block_addr(addr), hit_buffer, hit_index);
+                
+                // Increment write_misses only if both cache AND SB miss
+                if (!sb_hit) {
+                    ++write_misses;
+                }
+
+                if (sb_hit) {
+                    // Scenario 2: Cache MISS + SB HIT → Allocate in cache from SB (mark dirty for write)
+                    
+                    // Handle eviction if needed
+                    if (calculate_valid(metadata) == 1 && stored_tag != tag_val) {
+                        if (calculate_dirty(metadata) == 1) {
+                            ++writebacks;
+                            int blk_offset_evict = calculate_blk_offset(metadata);
+                            uint32_t eblk_addr = (stored_tag << (index_bits + blk_offset_bits)) | 
+                                                (set_idx << blk_offset_bits) | 
+                                                blk_offset_evict;
+                            int write_resp;
+                            if (next_cache != nullptr) {
+                                next_cache->cache_write(eblk_addr, write_resp);
+                                if (write_resp != 1) {
+                                    cerr << "Error: Write-back to lower level failed." << endl;
+                                    exit(EXIT_FAILURE);
+                                }
                             }
                         }
                     }
-                }
-                addr_out = addr;
-                cache_miss_read(addr_out, resp_out);
-                if (resp_out == 1) {
+                    
+                    // Allocate in cache (mark dirty for write)
+                    resp_out = 1;
                     cache[set_idx][0][0] = tag_val;
                     uint32_t new_metadata = 0;
                     new_metadata = set_blk_offset(new_metadata, blk_offset);
                     new_metadata = set_lru(new_metadata, 0);  
-                    new_metadata = set_dirty(new_metadata, 1);
+                    new_metadata = set_dirty(new_metadata, 1);  // Mark dirty for write
                     new_metadata = set_valid(new_metadata, 1);
                     cache[set_idx][0][1] = new_metadata;
+                    
+                    // Update stream buffer: rearrange and prefetch (hit_index + 1) blocks
+                    buffer_rearrange(hit_buffer, hit_index);
+                    uint32_t prefetch_addr = addr + (PREF_M - hit_index) * blk_size;
+                    for (int pf = 0; pf < (hit_index + 1); pf++) {
+                        stream_buffer[hit_buffer][pf + (PREF_M - hit_index - 1)] = get_block_addr(prefetch_addr);
+                        prefetches++;
+                        prefetch_addr += blk_size;
+                    }
+                    sb_lru_update(hit_buffer);
+                    
+                } else {
+                    // Scenario 1: Cache MISS + SB MISS → Fetch from memory, allocate SB with M blocks
+                    
+                    // Handle eviction if needed
+                    if (calculate_valid(metadata) == 1 && stored_tag != tag_val) {
+                        if (calculate_dirty(metadata) == 1) {
+                            ++writebacks;
+                            int blk_offset_evict = calculate_blk_offset(metadata);
+                            uint32_t eblk_addr = (stored_tag << (index_bits + blk_offset_bits)) | 
+                                                (set_idx << blk_offset_bits) | 
+                                                blk_offset_evict;
+                            int write_resp;
+                            if (next_cache != nullptr) {
+                                next_cache->cache_write(eblk_addr, write_resp);
+                                if (write_resp != 1) {
+                                    cerr << "Error: Write-back to lower level failed." << endl;
+                                    exit(EXIT_FAILURE);
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Fetch from memory
+                    addr_out = addr;
+                    cache_miss_read(addr_out, resp_out);
+                    
+                    if (resp_out == 1) {
+                        cache[set_idx][0][0] = tag_val;
+                        uint32_t new_metadata = 0;
+                        new_metadata = set_blk_offset(new_metadata, blk_offset);
+                        new_metadata = set_lru(new_metadata, 0);  
+                        new_metadata = set_dirty(new_metadata, 1);  // Mark dirty for write
+                        new_metadata = set_valid(new_metadata, 1);
+                        cache[set_idx][0][1] = new_metadata;
+                        
+                        // Allocate stream buffer and prefetch M blocks
+                        if (PREF_N > 0 && PREF_M > 0) {
+                            int victim_sb = find_sb_victim();
+                            bool was_invalid = (sb_params[victim_sb].valid == 0);
+                            sb_params[victim_sb].valid = 1;
+                            
+                            // Clear old contents
+                            for (int j = 0; j < PREF_M; j++) {
+                                stream_buffer[victim_sb][j] = UINT32_MAX;
+                            }
+                            
+                            // Prefetch M blocks: addr+1, addr+2, ..., addr+M
+                            uint32_t prefetch_addr = addr;
+                            for (int j = 0; j < PREF_M; j++) {
+                                prefetch_addr += blk_size;
+                                stream_buffer[victim_sb][j] = get_block_addr(prefetch_addr);
+                                prefetches++;
+                            }
+                            
+                            sb_lru_update(victim_sb, was_invalid);
+                        }
+                    }
                 }
             }
         } else if (assoc > 1) {
-            bool found = false;
-            int victim_way = -1;
+            // Check cache first
+            bool cache_hit = false;
+            int hit_way = -1;
 
             for (int w = 0; w < assoc; w++) {
                 uint32_t metadata = cache[set_idx][w][1];
                 uint32_t stored_tag = cache[set_idx][w][0];
                 if (stored_tag == tag_val && calculate_valid(metadata) == 1) {
-                    found = true;
-                    int old_lru = calculate_lru(metadata);
-                    metadata = set_dirty(metadata, 1);
-                    cache[set_idx][w][1] = metadata;
-                    resp_out = 1;
-                    lru_update(old_lru, set_idx);
+                    cache_hit = true;
+                    hit_way = w;
                     break;
                 }
             }
 
-            if (!found) {
-                ++write_misses;
+            if (cache_hit) {
+                // Cache HIT → Mark dirty
+                uint32_t metadata = cache[set_idx][hit_way][1];
+                int old_lru = calculate_lru(metadata);
+                metadata = set_dirty(metadata, 1);
+                cache[set_idx][hit_way][1] = metadata;
+                resp_out = 1;
+                lru_update(old_lru, set_idx);
+                
+                // But also check stream buffer for Scenario 4 (Cache HIT + SB HIT)
+                int hit_buffer = -1;
+                int hit_index = -1;
+                bool sb_hit = find_sb_hit(get_block_addr(addr), hit_buffer, hit_index);
+                
+                if (sb_hit) {
+                    // Scenario 4: Cache HIT + SB HIT → Continue prefetch stream
+                    buffer_rearrange(hit_buffer, hit_index);
+                    uint32_t prefetch_addr = addr + (PREF_M - hit_index) * blk_size;
+                    for (int pf = 0; pf < (hit_index + 1); pf++) {
+                        stream_buffer[hit_buffer][pf + (PREF_M - hit_index - 1)] = get_block_addr(prefetch_addr);
+                        prefetches++;
+                        prefetch_addr += blk_size;
+                    }
+                    sb_lru_update(hit_buffer);
+                }
+            } else {
+                // Cache MISS → Check stream buffer (MRU-first search)
+                int hit_buffer = -1;
+                int hit_index = -1;
+                bool sb_hit = find_sb_hit(get_block_addr(addr), hit_buffer, hit_index);
+                
+                // Increment write_misses only if both cache AND SB miss
+                if (!sb_hit) {
+                    ++write_misses;
+                }
+                int victim_way = -1;
+                
+                // Find victim way
                 for (int w = 0; w < assoc; w++) {
                     uint32_t metadata = cache[set_idx][w][1];
                     if (calculate_valid(metadata) == 0) {
@@ -449,17 +920,67 @@ public:
                     victim_way = 0;
                 }
 
-                addr_out = addr;
-                cache_miss_read(addr_out, resp_out);
-                if (resp_out == 1 && victim_way != -1) {
-                    cache[set_idx][victim_way][0] = tag_val;
-                    uint32_t metadata = 0;
-                    metadata = set_blk_offset(metadata, blk_offset);
-                    metadata = set_dirty(metadata, 1);
-                    metadata = set_valid(metadata, 1);
-                    cache[set_idx][victim_way][1] = metadata;
+                if (victim_way != -1) {
+                    if (sb_hit) {
+                        // Scenario 2: Cache MISS + SB HIT
+                        resp_out = 1;
+                        
+                        cache[set_idx][victim_way][0] = tag_val;
+                        uint32_t metadata = 0;
+                        metadata = set_blk_offset(metadata, blk_offset);
+                        metadata = set_dirty(metadata, 1);  // Mark dirty for write
+                        metadata = set_valid(metadata, 1);
+                        cache[set_idx][victim_way][1] = metadata;
+                        
+                        lru_insert(set_idx, victim_way);
+                        
+                        // Update stream buffer: rearrange and prefetch (hit_index + 1) blocks
+                        buffer_rearrange(hit_buffer, hit_index);
+                        uint32_t prefetch_addr = addr + (PREF_M - hit_index) * blk_size;
+                        for (int pf = 0; pf < (hit_index + 1); pf++) {
+                            stream_buffer[hit_buffer][pf + (PREF_M - hit_index - 1)] = get_block_addr(prefetch_addr);
+                            prefetches++;
+                            prefetch_addr += blk_size;
+                        }
+                        sb_lru_update(hit_buffer);
+                    } else {
+                        // Scenario 1: Cache MISS + SB MISS
+                        addr_out = addr;
+                        cache_miss_read(addr_out, resp_out);
+                        
+                        if (resp_out == 1) {
+                            cache[set_idx][victim_way][0] = tag_val;
+                            uint32_t metadata = 0;
+                            metadata = set_blk_offset(metadata, blk_offset);
+                            metadata = set_dirty(metadata, 1);  // Mark dirty for write
+                            metadata = set_valid(metadata, 1);
+                            cache[set_idx][victim_way][1] = metadata;
 
-                    lru_insert(set_idx, victim_way);
+                            lru_insert(set_idx, victim_way);
+                            
+                            // Allocate stream buffer and prefetch M blocks
+                            if (PREF_N > 0 && PREF_M > 0) {
+                                int victim_sb = find_sb_victim();
+                                bool was_invalid = (sb_params[victim_sb].valid == 0);
+                                sb_params[victim_sb].valid = 1;
+                                
+                                // Clear old contents
+                                for (int j = 0; j < PREF_M; j++) {
+                                    stream_buffer[victim_sb][j] = 0;
+                                }
+                                
+                                // Prefetch M blocks: addr+1, addr+2, ..., addr+M
+                                uint32_t prefetch_addr = addr;
+                                for (int j = 0; j < PREF_M; j++) {
+                                    prefetch_addr += blk_size;
+                                    stream_buffer[victim_sb][j] = get_block_addr(prefetch_addr);
+                                    prefetches++;
+                                }
+                                
+                                sb_lru_update(victim_sb, was_invalid);
+                            }
+                        }
+                    }
                 }
             }
         }
