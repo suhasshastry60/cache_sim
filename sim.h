@@ -67,14 +67,14 @@ public:
 
 
         if (blk_size > 1){
-            blk_offset_bits_local = (int)log2(blk_size);
+            blk_offset_bits_local = (int)ceil(log2(blk_size));
         }
         else {
             blk_offset_bits_local = 0;
         }
 
         if (num_sets > 1){
-            index_bits_local = (int)log2(num_sets);
+            index_bits_local = (int)ceil(log2(num_sets));
         }
         else {
             index_bits_local = 0;
