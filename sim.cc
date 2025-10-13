@@ -193,7 +193,7 @@ while (fscanf(fp, " %c %x", &rw, &addr) == 2) {
         cache_sys->L1->print_stream_buffers();
     }
 
-    cout << "\n===== Measurements =====\n";
+    cout << "===== Measurements =====\n";
     auto L1 = cache_sys->L1;
     auto L2 = cache_sys->L2;
 

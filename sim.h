@@ -253,6 +253,7 @@ public:
             cout << endl;
         }
         cout << dec;
+        cout << "\n";
     }
 
     void print_stream_buffers() const {
@@ -261,7 +262,7 @@ public:
             return; 
         }
         
-        cout << "\n===== Stream Buffer(s) contents =====\n";
+        cout << "===== Stream Buffer(s) contents =====\n";
 
         for (uint32_t lru_val = 0; lru_val < (uint32_t)PREF_N; lru_val++) {
 
@@ -282,6 +283,7 @@ public:
             }
         }
         cout << dec;
+        cout << "\n";
     }
 
     void cache_hit_read(int hit_tag, int &resp_out) {
