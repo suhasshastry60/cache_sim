@@ -15,9 +15,7 @@
     ... and so on
 */
 
-cache_wrapper::cache_wrapper(int size, int assoc, int blk_size, uint32_t addr_in,
-                  int tag_out, int addr_out, int resp_in, int cache_num,
-              char operation, int pref_n, int pref_m, cache_wrapper* next) {
+cache_holder::cache_holder(int size, int assoc, int blk_size, uint32_t addr_in,int tag_out, int addr_out, int resp_in, int cache_num,char operation, int pref_n, int pref_m, cache_holder* next) {
         this->size = size;
         this->assoc = assoc;
         this->blk_size = blk_size;
@@ -28,28 +26,60 @@ cache_wrapper::cache_wrapper(int size, int assoc, int blk_size, uint32_t addr_in
         this->cache_num = cache_num;
         this->operation = operation;
         this->resp_out = 0;
-    this->next_cache = next;
-    this->PREF_N = pref_n;
-    this->PREF_M = pref_m;
 
+        
+       this->next_cache = next;
+       this->PREF_N = pref_n;
+       this->PREF_M = pref_m;
+   
         tag_bits = 0;
         index_bits = 0;
         blk_offset_bits = 0;
 
         decode_addr(addr_in, tag_bits, index_bits, blk_offset_bits);
 
-    lru_bits = (assoc > 1) ? (int)ceil(log2((double)assoc)) : 0;
-        metadata_width = 2 + lru_bits + blk_offset_bits;
-
-        if (index_bits < 0 || index_bits > 30) {
-            cerr << "Error: index_bits out of range: " << index_bits << endl;
-            exit(EXIT_FAILURE);
+        if (assoc > 1)
+        {
+            lru_bits= (int)ceil(log2((double)assoc));
+        }
+        else
+        {
+            lru_bits= 0;
         }
 
-        set_size = (index_bits == 0) ? 1 : (1 << index_bits);
-        way_size = (assoc == 1) ? 1 : assoc;
+        metadata_width = 2 + lru_bits + blk_offset_bits;
 
-        if (set_size <= 0 || way_size <= 0) {
+        if (index_bits < 0 || index_bits > 30) 
+        {
+            cerr << "Error: index_bits out of range: " << index_bits << endl;
+
+           exit(EXIT_FAILURE);
+        }
+
+
+
+        if (index_bits == 0)
+        {
+            set_size= 1;
+        }
+        else
+        {
+            set_size= (1 << index_bits);
+        }
+
+
+        if (assoc == 1) 
+        {
+            way_size= 1;
+        }
+        else
+        {
+            way_size= assoc;
+        }
+        
+
+        if (set_size <= 0 || way_size <= 0)
+        {
             cerr << "Error: invalid set_size/way_size computed\n";
             exit(EXIT_FAILURE);
         }
@@ -58,7 +88,8 @@ cache_wrapper::cache_wrapper(int size, int assoc, int blk_size, uint32_t addr_in
 
     // Initialize stream buffer if prefetcher is enabled
     if (PREF_N > 0 && PREF_M > 0) {
-        stream_buffer.resize(PREF_N, vector<uint32_t>(PREF_M, UINT32_MAX));
+
+        stream_buffer.resize(PREF_N,vector<uint32_t>(PREF_M, UINT32_MAX));
         sb_params.resize(PREF_N);
         for (int i = 0; i < PREF_N; i++) {
             sb_params[i].valid = 0;
@@ -69,20 +100,17 @@ cache_wrapper::cache_wrapper(int size, int assoc, int blk_size, uint32_t addr_in
 
 class cache_interface {
 public:
-    cache_wrapper* L1;
-    cache_wrapper* L2;
+    cache_holder* L1;
+    cache_holder* L2;
 
     cache_interface(cache_params_t params) {
-        //fyi, if there is L2, prefetcher is in L2 and fetches it from memory, else add a prefetcher in L1 and fetch it from memory
-        if (params.L2_SIZE > 0) { //also instantiate the prefetcher in L2
-            L2 = new cache_wrapper(params.L2_SIZE, params.L2_ASSOC, params.BLOCKSIZE,
-                                   0, 0, 0, 0, 2, 'r', params.PREF_N, params.PREF_M, nullptr);
-            L1 = new cache_wrapper(params.L1_SIZE, params.L1_ASSOC, params.BLOCKSIZE,
-                                   0, 0, 0, 0, 1, 'r', 0, 0, L2);
+
+        if (params.L2_SIZE > 0) { 
+            L2 = new cache_holder(params.L2_SIZE, params.L2_ASSOC, params.BLOCKSIZE,0, 0, 0,0, 2,'r', params.PREF_N, params.PREF_M, nullptr);
+            L1 = new cache_holder(params.L1_SIZE, params.L1_ASSOC, params.BLOCKSIZE,0, 0, 0,0, 1,'r', 0, 0, L2);
         } else {
-            L2 = nullptr; //instantiate prefetcher in L1
-            L1 = new cache_wrapper(params.L1_SIZE, params.L1_ASSOC, params.BLOCKSIZE,
-                                   0, 0, 0, 0, 1, 'r', params.PREF_N, params.PREF_M, nullptr);
+            L2 = nullptr; //crete prefetcher in L1
+            L1 = new cache_holder(params.L1_SIZE, params.L1_ASSOC, params.BLOCKSIZE,0, 0, 0, 0, 1, 'r', params.PREF_N, params.PREF_M, nullptr);
         }
     }
 
@@ -130,32 +158,38 @@ int main(int argc, char *argv[]) {
     printf("trace_file: %s\n", trace_file);
     printf("\n");
 
-    // Create cache interface
+
     cache_interface* cache_sys = new cache_interface(params);
 
-    // Read requests from the trace file and echo them back.
+    
     int resp;
 while (fscanf(fp, " %c %x", &rw, &addr) == 2) {
     if (rw == 'r') {
         cache_sys->L1->cache_read(addr, resp);
-    } else if (rw == 'w') {
+    } 
+    
+    else if (rw == 'w') {
         cache_sys->L1->cache_write(addr, resp);
-    } else {
+    } 
+    
+    else {
         printf("Error: Unknown request type %c.\n", rw);
         exit(EXIT_FAILURE);
     }
 }
 
-    // Print cache contents with fixed formatting
+
     cache_sys->L1->print_contents();
-    if (cache_sys->L2 != nullptr) {
+
+    if (cache_sys->L2 != nullptr) {              
         cache_sys->L2->print_contents();
     }
     
-    // Print stream buffer contents (from the cache that has the prefetcher)
     if (cache_sys->L2 != nullptr) {
         cache_sys->L2->print_stream_buffers();
-    } else {
+    } 
+    
+    else {
         cache_sys->L1->print_stream_buffers();
     }
 
@@ -163,15 +197,21 @@ while (fscanf(fp, " %c %x", &rw, &addr) == 2) {
     auto L1 = cache_sys->L1;
     auto L2 = cache_sys->L2;
 
-    double l1_miss_rate = (L1->reads + L1->writes > 0) ?
-        static_cast<double>(L1->read_misses + L1->write_misses) / (L1->reads + L1->writes) : 0.0;
+    double l1_miss_rate = 0.0;
+    double l2_miss_rate = 0.0;
 
-    double l2_miss_rate = (L2 && L2->reads > 0) ?
-        static_cast<double>(L2->read_misses) / L2->reads : 0.0;
+    if (L1->reads + L1->writes > 0) {
+        l1_miss_rate = static_cast<double>(L1->read_misses + L1->write_misses) / (L1->reads + L1->writes);
+    } 
 
-    uint32_t mem_traffic = (L2) ?
-        L2->read_misses + L2->write_misses + L2->writebacks + L2->prefetches :
-        L1->read_misses + L1->write_misses + L1->writebacks + L1->prefetches;
+
+    if (L2 && L2->reads > 0) {
+        l2_miss_rate  =  static_cast<double>(L2->read_misses) / L2->reads;
+    } 
+
+
+
+    uint32_t mem_traffic = (L2) ? L2->read_misses + L2->write_misses + L2->writebacks + L2->prefetches :L1->read_misses +L1->write_misses +L1->writebacks + L1->prefetches;
 
     printf("a. L1 reads:                   %u\n", L1->reads);
     printf("b. L1 read misses:             %u\n", L1->read_misses);
