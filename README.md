@@ -147,7 +147,6 @@ q. memory traffic:             170000
 - `sim.cc` - Main program and implementation
 - `Makefile` - Build configuration
 - `runs_and_traces/` - Test traces and expected outputs
-- `spec_gpt.pdf` - Detailed specification
 
 ---
 
